@@ -743,3 +743,211 @@ func TestExpandEnv(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		cmd  string
+		form string
+		path string
+		ok   bool
+	}{
+		{"run", []string{"run", "f"}, "run", "curl", "f", true},
+		{"fmt", []string{"fmt", "f"}, "fmt", "curl", "f", true},
+		{"gen with no form", []string{"gen", "f"}, "gen", "curl", "f", true},
+		{"gen with a form", []string{"gen", "curl", "f"}, "gen", "curl", "f", true},
+		{
+			// Whether rr knows the form is gen's to say, so that it can
+			// name the one it was given.
+			"gen with a form rr does not know",
+			[]string{"gen", "httpie", "f"}, "gen", "httpie", "f", true,
+		},
+		{"a form where none is taken", []string{"run", "curl", "f"}, "", "", "", false},
+		{"no file", []string{"run"}, "", "", "", false},
+		{"nothing at all", nil, "", "", "", false},
+		{"one word too many", []string{"gen", "curl", "f", "g"}, "", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, form, path, ok := splitArgs(tt.in)
+			if cmd != tt.cmd || form != tt.form || path != tt.path || ok != tt.ok {
+				t.Fatalf("splitArgs(%q) = %q, %q, %q, %v, want %q, %q, %q, %v",
+					tt.in, cmd, form, path, ok, tt.cmd, tt.form, tt.path, tt.ok)
+			}
+		})
+	}
+}
+
+func TestGen(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		want string
+	}{
+		{
+			name: "a method and a URL alone",
+			file: "get https://example.com/items HTTP/1.1\n",
+			want: "curl -X GET https://example.com/items\n",
+		},
+		{
+			// Names come out canonical and sorted, since a header map keeps
+			// neither the spelling nor the order the file had, and the body
+			// comes out as httpfmt indented it.
+			name: "headers and a JSON body",
+			file: `post https://example.com/items HTTP/1.1
+content-type: application/json
+x-note: it's fine
+accept: a
+accept: b
+x-empty:
+
+{"name": "x"}
+`,
+			want: `curl -X POST https://example.com/items \
+  -H 'Accept: a' \
+  -H 'Accept: b' \
+  -H 'Content-Type: application/json' \
+  -H 'X-Empty;' \
+  -H 'X-Note: it'\''s fine' \
+  --data-raw '{
+  "name": "x"
+}'
+`,
+		},
+		{
+			name: "a stored response is no part of the request",
+			file: `GET https://example.com/ HTTP/1.1
+
+----
+HTTP/1.1 200 OK
+Content-Length: 2
+
+hi`,
+			want: "curl -X GET https://example.com/\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := write(t, nil, tt.file)
+
+			var b bytes.Buffer
+			if err := gen(t.Context(), "curl", path, &b); err != nil {
+				t.Fatal(err)
+			}
+
+			if got := b.String(); got != tt.want {
+				t.Fatalf("gen:\n%s\nwant:\n%s", got, tt.want)
+			}
+			if got := read(t, nil, path); got != tt.file {
+				t.Errorf("file changed:\n%s\n\nwant:\n%s", got, tt.file)
+			}
+		})
+	}
+}
+
+func TestGenExpands(t *testing.T) {
+	// The command carries the value and the file keeps the variable: what is
+	// written is what run would send, and the file stays safe to commit.
+	t.Setenv("TOKEN", "s3cret")
+	file := `GET https://example.com/ HTTP/1.1
+Authorization: Bearer ${TOKEN}
+
+`
+	path := write(t, nil, file)
+
+	var b bytes.Buffer
+	if err := gen(t.Context(), "curl", path, &b); err != nil {
+		t.Fatal(err)
+	}
+
+	want := `curl -X GET https://example.com/ \
+  -H 'Authorization: Bearer s3cret'
+`
+	if got := b.String(); got != want {
+		t.Fatalf("gen:\n%s\nwant:\n%s", got, want)
+	}
+	if got := read(t, nil, path); got != file {
+		t.Errorf("file changed:\n%s\n\nwant:\n%s", got, file)
+	}
+}
+
+func TestGenUnknownFormComesFirst(t *testing.T) {
+	// The form is checked before the file is opened, so a typo is reported
+	// as itself rather than as trouble with a file that was never at fault.
+	err := gen(t.Context(), "httpie", filepath.Join(t.TempDir(), "nope.rr"), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "unknown form: httpie") {
+		t.Fatalf("err = %v, want it to name the form", err)
+	}
+}
+
+func TestGenErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		form string
+		file string
+		want string
+		// A form rr does not know is no fault of the file, so it alone is
+		// not an *fs.PathError.
+		pathErr bool
+	}{
+		{
+			name: "a form rr does not know",
+			form: "httpie",
+			file: "GET https://example.com/ HTTP/1.1\n\n",
+			want: "unknown form: httpie",
+		},
+		{
+			name:    "every unset variable is named",
+			form:    "curl",
+			file:    "GET https://example.com/$ALSO HTTP/1.1\nAuthorization: Bearer ${MISSING}\n\n",
+			want:    "unset: ALSO, MISSING",
+			pathErr: true,
+		},
+		{
+			name:    "request URI is not absolute",
+			form:    "curl",
+			file:    "GET /path HTTP/1.1\nHost: example.com\n\n",
+			want:    "absolute",
+			pathErr: true,
+		},
+		{
+			name:    "an empty file",
+			form:    "curl",
+			file:    "",
+			want:    "empty",
+			pathErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := write(t, nil, tt.file)
+
+			var b bytes.Buffer
+			err := gen(t.Context(), tt.form, path, &b)
+			if err == nil {
+				t.Fatalf("gen wrote %q, want an error", b.String())
+			}
+
+			var perr *fs.PathError
+			if got := errors.As(err, &perr); got != tt.pathErr {
+				t.Fatalf("err = %v; *fs.PathError is %v, want %v", err, got, tt.pathErr)
+			}
+			msg := err.Error()
+			if tt.pathErr {
+				if perr.Path != path {
+					t.Errorf("err names %s, want %s", perr.Path, path)
+				}
+				// Matching the inner error keeps the temporary path, which
+				// embeds this subtest's name, from matching in its place.
+				msg = perr.Err.Error()
+			}
+			if !strings.Contains(msg, tt.want) {
+				t.Errorf("err = %v, want it to mention %q", err, tt.want)
+			}
+			if b.Len() != 0 {
+				t.Errorf("wrote %q on error, want nothing", b.String())
+			}
+		})
+	}
+}

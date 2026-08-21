@@ -8,6 +8,8 @@ Usage:
 
 	rr run file	send the request in file, store the response in it
 	rr fmt file	format file
+	rr gen file	write the request as a curl command
+	rr gen form file	write the request in another form
 
 The request is wire-format HTTP with an absolute request URI, so there is
 nothing to learn and nothing to export. Everything after the blank line is the
@@ -41,6 +43,23 @@ Running formats the request first: a known method is upper-cased, a standard
 header name is respelled and written ahead of the custom ones, which are left
 alone, and a JSON body is indented when Content-Type says it is JSON. Rr fmt
 does that formatting on its own. A failed request leaves the file untouched.
+
+Rr gen writes the request as a command for another program and sends nothing.
+The only form so far is curl, which is what it writes when none is named, so
+rr gen items.rr and rr gen curl items.rr ask for the same thing. It expands
+${NAME} and $NAME the way rr run does, so what it writes is the request rr run
+would send, values and all, and is not itself safe to commit.
+
+	$ TOKEN=$(pass show api/token) rr gen items.rr
+	curl -X POST https://api.example.com/items \
+	  -H 'Authorization: Bearer 9f3c1e...' \
+	  -H 'Content-Type: application/json' \
+	  --data-raw '{
+	  "name": "x"
+	}'
+
+Piping that to a shell sends the request curl's way, which is the point of
+having it: the file goes to someone who has curl and has never heard of rr.
 
 The response is stored as it came off the wire. Redirects are not followed, so
 it is the answer to this request rather than the one at the end of a chain.

@@ -7,16 +7,21 @@ Usage:
 
 	rr run file
 	rr fmt file
+	rr gen [form] file
 
 Rr run sends the request and stores the response. Rr fmt only formats the
-file, sending nothing and leaving any stored response alone.
+file, sending nothing and leaving any stored response alone. Rr gen writes the
+request in another form and sends nothing either; curl is the form it writes
+when none is named, and so far the only one there is.
 
 The request is wire-format HTTP with an absolute-form request URI. It is put
 in canonical form before it is sent, so a file written by hand ends up stored
 the way rr would have written it.
 
 ${NAME} and $NAME are expanded from the environment before sending, but the
-file on disk keeps the unexpanded text, so it stays safe to commit.
+file on disk keeps the unexpanded text, so it stays safe to commit. Rr gen
+expands them the same way, so what it writes carries the values and is not
+itself safe to commit.
 
 Everything after the blank line is sent as the body, less the newline that
 ends the file; write two to send a body that ends in one. Rr frames the
@@ -45,6 +50,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lotusirous/cmd/rr/http2curl"
 	"github.com/lotusirous/cmd/rr/httpfmt"
 )
 
@@ -52,6 +58,8 @@ const delim = "----"
 
 const usageText = `usage: rr run file	send the request in file, store the response in it
        rr fmt file	format file
+       rr gen file	write the request as a curl command
+       rr gen form file	write the request in another form
 file is a wire-format HTTP request:
 	POST https://api.example.com/items HTTP/1.1
 	Content-Type: application/json
@@ -70,15 +78,15 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("rr: ")
 
-	args := os.Args[1:]
-	if len(args) != 2 {
+	cmd, form, path, ok := splitArgs(os.Args[1:])
+	if !ok {
 		usage()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
 	var err error
-	switch path := args[1]; args[0] {
+	switch cmd {
 	case "run":
 		client := &http.Client{
 			Timeout:       30 * time.Second,
@@ -87,12 +95,26 @@ func main() {
 		err = run(ctx, path, client, os.Stdout)
 	case "fmt":
 		err = formatFile(path)
+	case "gen":
+		err = gen(ctx, form, path, os.Stdout)
 	default:
 		usage()
 	}
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+// splitArgs returns the command, the form, and the file that args names. Only
+// rr gen takes a form, and the form is curl when it names none.
+func splitArgs(args []string) (cmd, form, path string, ok bool) {
+	switch {
+	case len(args) == 2:
+		return args[0], "curl", args[1], true
+	case len(args) == 3 && args[0] == "gen":
+		return args[0], args[1], args[2], true
+	}
+	return "", "", "", false
 }
 
 // noRedirect keeps the client from following redirects, so the stored
@@ -146,6 +168,34 @@ func formatFile(path string) error {
 	}
 	src, rest := splitFile(data)
 	return os.WriteFile(path, append(httpfmt.Format(src), rest...), mode)
+}
+
+// gen writes the request in path in another form, sending nothing. It
+// formats and expands the way run does, so what it writes is the request that
+// run would send, values and all.
+func gen(ctx context.Context, form, path string, w io.Writer) error {
+	var write func(io.Writer, *http.Request) error
+	switch form {
+	case "curl":
+		write = http2curl.Write
+	default:
+		return fmt.Errorf("unknown form: %s", form)
+	}
+
+	data, _, err := readFile(path)
+	if err != nil {
+		return err
+	}
+	src, _ := splitFile(data)
+	expanded, err := expandEnv(httpfmt.Format(src))
+	if err != nil {
+		return &fs.PathError{Op: "expand", Path: path, Err: err}
+	}
+	req, err := parseRequest(ctx, expanded)
+	if err != nil {
+		return &fs.PathError{Op: "parse", Path: path, Err: err}
+	}
+	return write(w, req)
 }
 
 // readFile returns the contents of path and the mode to store it back under.
