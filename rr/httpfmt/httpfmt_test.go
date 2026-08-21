@@ -77,9 +77,23 @@ func TestFormat(t *testing.T) {
 			want: "GET https://x/ HTTP/1.1\nHost: h\n\n",
 		},
 		{
-			name: "header order is kept",
+			name: "custom names keep their order",
 			in:   "GET https://x/ HTTP/1.1\nZ: 1\nA: 2\nM: 3\n\n",
 			want: "GET https://x/ HTTP/1.1\nZ: 1\nA: 2\nM: 3\n\n",
+		},
+		{
+			// The standard names lead, and each group keeps the order the
+			// file has it in.
+			name: "standard names come first",
+			in:   "GET https://x/ HTTP/1.1\ncountry-id: vn\nHost: h\nX-Key: k\nAccept: */*\n",
+			want: "GET https://x/ HTTP/1.1\nHost: h\nAccept: */*\ncountry-id: vn\nX-Key: k\n\n",
+		},
+		{
+			// RFC 9110, 5.3: field lines that share a name are ordered, so
+			// partitioning must not shuffle them.
+			name: "repeated names keep their order",
+			in:   "GET https://x/ HTTP/1.1\nAccept: a\nX-Tag: 1\nAccept: b\nX-Tag: 2\n",
+			want: "GET https://x/ HTTP/1.1\nAccept: a\nAccept: b\nX-Tag: 1\nX-Tag: 2\n\n",
 		},
 		{
 			name: "a variable is not expanded",

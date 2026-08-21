@@ -11,17 +11,17 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"mime"
 	"net/textproto"
+	"slices"
 	"strings"
 )
 
 // Format returns req in canonical form: a standard header name respelled the
-// standard way, one space after each header colon, no framing headers, a
-// blank line ending the header block, and an indented body when Content-Type
-// declares JSON. It is a
+// standard way and written ahead of the custom ones, one space after each
+// header colon, no framing headers, a blank line ending the header block, and
+// an indented body when Content-Type declares JSON. It is a
 // rewrite of the text, not of the request: header order is kept, a body that
 // is not JSON is left alone, and ${NAME} is left for the caller to expand.
 //
@@ -44,6 +44,12 @@ func Format(req []byte) []byte {
 	buf.WriteString(canonMethod(first))
 	buf.WriteByte('\n')
 
+	// The standard names are written before the custom ones, each group in
+	// the order the file has them. Repeated names are why these are slices
+	// and not a map of any kind: RFC 9110, 5.3 gives meaning to the order of
+	// field lines that share a name, so they must all survive, in order.
+	var std, custom []string
+
 	var contentType string
 	for {
 		line, err := tp.ReadContinuedLine()
@@ -52,26 +58,35 @@ func Format(req []byte) []byte {
 		}
 		name, value, ok := strings.Cut(line, ":")
 		if !ok {
-			buf.WriteString(line)
-			buf.WriteByte('\n')
+			custom = append(custom, line) // not a field line
 			continue
 		}
 		name, value = strings.TrimSpace(name), strings.TrimSpace(value)
 		canon := textproto.CanonicalMIMEHeaderKey(name)
-		switch {
-		case canon == "Content-Length", canon == "Transfer-Encoding":
+		switch canon {
+		case "Content-Length", "Transfer-Encoding":
 			continue
-		case canon == "Content-Type":
+		case "Content-Type":
 			contentType = value
 		}
-		if std, ok := stdHeader[canon]; ok {
-			name = std
+		spelling, isStd := stdHeader[canon]
+		if isStd {
+			name = spelling
 		}
-		if value == "" {
-			fmt.Fprintf(&buf, "%s:\n", name) // no value, and so no trailing space
-			continue
+		text := name + ":"
+		if value != "" {
+			text += " " + value // and no trailing space when there is none
 		}
-		fmt.Fprintf(&buf, "%s: %s\n", name, value)
+		if isStd {
+			std = append(std, text)
+		} else {
+			custom = append(custom, text)
+		}
+	}
+
+	for _, text := range slices.Concat(std, custom) {
+		buf.WriteString(text)
+		buf.WriteByte('\n')
 	}
 	buf.WriteByte('\n')
 
