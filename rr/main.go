@@ -1,6 +1,7 @@
 /*
 Rr sends the HTTP request stored in a file and writes the response back into
-the same file, after a ---- line.
+the same file, after a ---- line. The name is those two halves: request and
+response.
 
 Usage:
 
