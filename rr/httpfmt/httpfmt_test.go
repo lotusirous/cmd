@@ -61,6 +61,13 @@ func TestFormat(t *testing.T) {
 			want: "POST https://x/ HTTP/1.1\nContent-Type: application/vnd.api+json; charset=utf-8\n\n{\n  \"a\": 1\n}\n",
 		},
 		{
+			// Two Content-Type lines are malformed, but http.Header.Get
+			// reads the first, so the body here is text and stays as it is.
+			name: "a repeated content type is read once",
+			in:   "POST https://x/ HTTP/1.1\nContent-Type: text/plain\nContent-Type: application/json\n\n{\"a\":1}",
+			want: "POST https://x/ HTTP/1.1\nContent-Type: text/plain\nContent-Type: application/json\n\n{\"a\":1}\n",
+		},
+		{
 			// A body that merely parses as JSON is not ours to reformat.
 			name: "an undeclared json body is left alone",
 			in:   "POST https://x/ HTTP/1.1\n\n{\"a\":1}",

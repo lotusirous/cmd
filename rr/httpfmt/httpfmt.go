@@ -67,7 +67,9 @@ func Format(req []byte) []byte {
 		case "Content-Length", "Transfer-Encoding":
 			continue
 		case "Content-Type":
-			contentType = value
+			if contentType == "" {
+				contentType = value // the first wins, as Header.Get does
+			}
 		}
 		spelling, isStd := stdHeader[canon]
 		if isStd {

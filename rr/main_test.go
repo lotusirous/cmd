@@ -11,13 +11,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
-// urlMark stands in for the test server's address in the files below, so a
-// fixture reads like a file you would write by hand.
+// urlMark stands in for the test server's address in the files below, so
+// each one reads like a file you would write by hand.
 const urlMark = "{{url}}"
 
 // serve starts a test server whose responses carry no Date header, so the
@@ -53,10 +54,10 @@ func write(t *testing.T, srv *httptest.Server, content string) string {
 	return path
 }
 
-// asFixture puts the address back as {{url}} and folds the CRLF that wire
-// format requires down to LF, so the result compares against a fixture
-// written as plain text. TestStoredResponseIsWireFormat covers the folding.
-func asFixture(srv *httptest.Server, s string) string {
+// canon puts the address back as {{url}} and folds the CRLF that wire format
+// requires down to LF, so what a test reads compares against the plain text it
+// was written with. TestStoredResponseIsWireFormat covers the folding.
+func canon(srv *httptest.Server, s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	if srv != nil {
 		s = strings.ReplaceAll(s, srv.URL, urlMark)
@@ -70,7 +71,7 @@ func read(t *testing.T, srv *httptest.Server, path string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return asFixture(srv, string(data))
+	return canon(srv, string(data))
 }
 
 // TestRun checks the whole round trip: file in, file out. Each want is the
@@ -304,7 +305,7 @@ hello`,
 				t.Errorf("file after run:\n%s\n\nwant:\n%s", got, tt.want)
 			}
 			_, wantStdout, _ := strings.Cut(tt.want, delim+"\n")
-			if got := asFixture(srv, stdout.String()); got != wantStdout {
+			if got := canon(srv, stdout.String()); got != wantStdout {
 				t.Errorf("stdout:\n%s\n\nwant:\n%s", got, wantStdout)
 			}
 		})
@@ -346,6 +347,17 @@ Content-Length: 3
 
 old`,
 			want: "127.0.0.1:1",
+		},
+		{
+			// RFC 9112, 3.2: a request with two Host lines is malformed, and
+			// http.ReadRequest refuses it rather than pick one.
+			name: "two Host headers",
+			file: `GET https://example.com/ HTTP/1.1
+Host: one
+Host: two
+
+`,
+			want: "too many Host headers",
 		},
 		{
 			name: "an empty file",
@@ -572,6 +584,23 @@ func TestRunCancel(t *testing.T) {
 	}
 }
 
+// Field lines that share a name are all sent, in the order the file has them
+// (RFC 9110, 5.3), rather than collapsed to one.
+func TestRunSendsRepeatedFields(t *testing.T) {
+	got := make(chan []string, 1)
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Header["X-Tag"]
+	})
+
+	path := write(t, srv, "GET "+urlMark+"/ HTTP/1.1\nHost: h\nX-Tag: 1\nX-Tag: 2\n\n")
+	if err := run(t.Context(), path, testClient(srv), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if tags := <-got; !slices.Equal(tags, []string{"1", "2"}) {
+		t.Fatalf("server saw X-Tag = %q, want [1 2]", tags)
+	}
+}
+
 func TestRunDirectory(t *testing.T) {
 	dir := t.TempDir()
 	err := run(t.Context(), dir, http.DefaultClient, io.Discard)
@@ -629,7 +658,7 @@ func TestRunKeepsMode(t *testing.T) {
 	}
 }
 
-// The fixtures above are folded to LF for readability; the response half is
+// The files above are folded to LF for readability; the response half is
 // really stored in wire format, with CRLF.
 func TestStoredResponseIsWireFormat(t *testing.T) {
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
