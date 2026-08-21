@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -348,6 +349,17 @@ old`,
 			want: "127.0.0.1:1",
 		},
 		{
+			// RFC 9112, 3.2: a request with two Host lines is malformed, and
+			// http.ReadRequest refuses it rather than pick one.
+			name: "two Host headers",
+			file: `GET https://example.com/ HTTP/1.1
+Host: one
+Host: two
+
+`,
+			want: "too many Host headers",
+		},
+		{
 			name: "an empty file",
 			file: "",
 			want: "empty",
@@ -569,6 +581,23 @@ func TestRunCancel(t *testing.T) {
 	}
 	if got := read(t, srv, path); got != file {
 		t.Errorf("file changed on cancel:\n%s\nwant:\n%s", got, file)
+	}
+}
+
+// Field lines that share a name are all sent, in the order the file has them
+// (RFC 9110, 5.3), rather than collapsed to one.
+func TestRunSendsRepeatedFields(t *testing.T) {
+	got := make(chan []string, 1)
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Header["X-Tag"]
+	})
+
+	path := write(t, srv, "GET "+urlMark+"/ HTTP/1.1\nHost: h\nX-Tag: 1\nX-Tag: 2\n\n")
+	if err := run(t.Context(), path, testClient(srv), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if tags := <-got; !slices.Equal(tags, []string{"1", "2"}) {
+		t.Fatalf("server saw X-Tag = %q, want [1 2]", tags)
 	}
 }
 

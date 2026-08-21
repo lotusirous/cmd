@@ -249,7 +249,9 @@ func parseRequest(ctx context.Context, b []byte) (*http.Request, error) {
 // wire format, indenting JSON bodies.
 func responseWire(resp *http.Response) ([]byte, error) {
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	if cerr := resp.Body.Close(); err == nil {
+		err = cerr
+	}
 	if err != nil {
 		return nil, err
 	}
