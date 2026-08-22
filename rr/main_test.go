@@ -280,6 +280,30 @@ GET http://127.0.0.1:1/nope HTTP/1.1
 	}
 }
 
+// -timeout gives an exchange a deadline of its own. What never answered is
+// not stored, so the file is left as it was.
+func TestRunTimesOut(t *testing.T) {
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done() // answer nothing until the client gives up
+	})
+
+	file := "-- x --\nGET " + urlMark + "/ HTTP/1.1\n\n"
+	path := write(t, srv, file)
+	client := testClient(srv)
+	client.Timeout = 50 * time.Millisecond
+
+	err := run(t.Context(), path, option{client: client, out: io.Discard})
+	if err == nil || !strings.Contains(err.Error(), "x:") {
+		t.Fatalf("err = %v, want it to name the exchange x", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want a deadline exceeded under it", err)
+	}
+	if got := read(t, srv, path); got != file {
+		t.Errorf("file changed:\n%s\n\nwant:\n%s", got, file)
+	}
+}
+
 // The request carries the context, so cancelling it - which is what ^C does,
 // through signal.NotifyContext - drops a request in flight rather than
 // waiting out the client timeout. Nothing answered, so the file is untouched.

@@ -17,7 +17,7 @@ that is not text.
 
 Usage:
 
-	rr run [-match regexp] [-omit regexp] file
+	rr run [-match regexp] [-omit regexp] [-timeout duration] file
 	rr fmt file
 	rr gen [-match regexp] [-form form] file
 
@@ -56,6 +56,12 @@ followed by the response last stored for it. The response begins at the first
 line that begins one: HTTP/, a version, and a status code. The request is put
 in canonical form before it is sent, so a file written by hand ends up stored
 the way rr would have written it.
+
+Nothing gives up on its own: a request waits as long as the server takes to
+answer it, and ^C is how a run is called off. -timeout gives each exchange a
+deadline instead, written the way Go writes a duration — 1s, 500ms, 2m30s —
+and it covers the whole of one exchange, from the connection to the last byte
+of the body, rather than the run.
 
 A response is stored as it came back, less the headers -omit names. The
 pattern is matched against the canonical name of each one and is unanchored,
@@ -130,7 +136,7 @@ import (
 	"github.com/lotusirous/cmd/rr/httpfmt"
 )
 
-const usageText = `usage: rr run [-match regexp] [-omit regexp] file	send the requests in file, store the responses in it
+const usageText = `usage: rr run [-match regexp] [-omit regexp] [-timeout duration] file	send the requests in file, store the responses in it
        rr fmt file	format the requests in file, send nothing
        rr gen [-match regexp] [-form form] file	write the requests as curl commands
 file holds exchanges, each opened by a line naming it:
@@ -160,10 +166,12 @@ func main() {
 	fs := flag.NewFlagSet("rr "+cmd, flag.ExitOnError)
 	fs.Usage = usage
 	var matchFlag, omitFlag, formFlag *string
+	var timeoutFlag *time.Duration
 	switch cmd {
 	case "run":
 		matchFlag = fs.String("match", "", "send only the exchanges whose name this matches")
 		omitFlag = fs.String("omit", "", "store no response header whose name this matches")
+		timeoutFlag = fs.Duration("timeout", 0, "wait no longer than this for an exchange to answer")
 	case "fmt":
 	case "gen":
 		matchFlag = fs.String("match", "", "write only the exchanges whose name this matches")
@@ -195,7 +203,7 @@ func main() {
 			match: match,
 			omit:  omit,
 			client: &http.Client{
-				Timeout:       30 * time.Second,
+				Timeout:       *timeoutFlag, // zero waits as long as the server takes
 				CheckRedirect: noRedirect,
 			},
 			out: os.Stdout,

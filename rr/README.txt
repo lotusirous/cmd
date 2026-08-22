@@ -4,7 +4,7 @@ NAME
      rr - send the HTTP requests stored in a file, store the responses in it
 
 SYNOPSIS
-     rr run [ -match regexp ] [ -omit regexp ] file
+     rr run [ -match regexp ] [ -omit regexp ] [ -timeout duration ] file
      rr fmt file
      rr gen [ -match regexp ] [ -form form ] file
 
@@ -75,6 +75,13 @@ DESCRIPTION
      Content-Length outlives any pattern, being rr's framing of the body it
      stores rather than a header the server sent.
 
+     -timeout gives each exchange a deadline, written the way Go writes a
+     duration: 1s, 500ms, 2m30s.  It covers the whole of one exchange, from
+     the connection to the last byte of the body, and it is that exchange's
+     own rather than the run's.  Without it nothing gives up: a request
+     waits as long as the server takes to answer it, and ^C is how a run
+     that will not end is called off.
+
      Rr fmt does that formatting on its own, over the whole file, and sends
      nothing.  A known method is upper-cased, CRLF and folded lines are
      undone, a header colon is followed by one space, the standard header
@@ -142,9 +149,9 @@ EXAMPLES
             }
           ]
 
-     Send only some of them:
+     Send only some of them, and wait no longer than a moment for each:
 
-          $ rr run -match '^items/' api.rr
+          $ rr run -match '^items/' -timeout 5s api.rr
 
      Keep the chatty half of an answer out of the file, so the diff says
      what changed rather than when it was fetched:
@@ -234,6 +241,6 @@ BUGS
      like a response, is cut short there.  The format has no escape, that
      being what keeps it plain text.
 
-     A request over TLS may negotiate HTTP/2 and be stored as such.  Each
-     request gets thirty seconds, and ^C cancels one in flight, leaving
-     stored whatever answered before it.
+     A request over TLS may negotiate HTTP/2 and be stored as such.  A
+     request waits forever unless -timeout says otherwise, and ^C cancels
+     one in flight, leaving stored whatever answered before it.
