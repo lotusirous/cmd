@@ -17,7 +17,7 @@ that is not text.
 
 Usage:
 
-	rr run [-match regexp] file
+	rr run [-match regexp] [-omit regexp] file
 	rr fmt file
 	rr gen [-match regexp] [-form form] file
 
@@ -56,6 +56,15 @@ followed by the response last stored for it. The response begins at the first
 line that begins one: HTTP/, a version, and a status code. The request is put
 in canonical form before it is sent, so a file written by hand ends up stored
 the way rr would have written it.
+
+A response is stored as it came back, less the headers -omit names. The
+pattern is matched against the canonical name of each one and is unanchored,
+as -match is: -omit '^(Date|X-Amz-)' keeps out a date that moves every run
+and a request id that is new every time, so what a diff is left with is what
+changed. It says what the file keeps and no more. The request is the writer's
+own text and keeps every line of it, and Content-Length outlives any pattern,
+being rr's framing of the body it stores rather than a header the server
+sent.
 
 ${NAME} and $NAME are expanded from the environment before sending, but the
 file on disk keeps the unexpanded text, so it stays safe to commit. Rr gen
@@ -130,7 +139,7 @@ var (
 	markSuf = []byte(" --")
 )
 
-const usageText = `usage: rr run [-match regexp] file	send the requests in file, store the responses in it
+const usageText = `usage: rr run [-match regexp] [-omit regexp] file	send the requests in file, store the responses in it
        rr fmt file	format the requests in file, send nothing
        rr gen [-match regexp] [-form form] file	write the requests as curl commands
 file holds exchanges, each opened by a line naming it:
@@ -159,14 +168,15 @@ func main() {
 
 	fs := flag.NewFlagSet("rr "+cmd, flag.ExitOnError)
 	fs.Usage = usage
-	var match, form *string
+	var matchFlag, omitFlag, formFlag *string
 	switch cmd {
 	case "run":
-		match = fs.String("match", "", "send only the exchanges whose name this matches")
+		matchFlag = fs.String("match", "", "send only the exchanges whose name this matches")
+		omitFlag = fs.String("omit", "", "store no response header whose name this matches")
 	case "fmt":
 	case "gen":
-		match = fs.String("match", "", "write only the exchanges whose name this matches")
-		form = fs.String("form", "curl", "the form to write the request in")
+		matchFlag = fs.String("match", "", "write only the exchanges whose name this matches")
+		formFlag = fs.String("form", "curl", "the form to write the request in")
 	default:
 		usage()
 	}
@@ -176,9 +186,13 @@ func main() {
 	}
 	path := fs.Arg(0)
 
-	re, err := pattern(match)
+	match, err := pattern(matchFlag)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("-match: %v", err)
+	}
+	omit, err := pattern(omitFlag)
+	if err != nil {
+		log.Fatalf("-omit: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -186,29 +200,33 @@ func main() {
 
 	switch cmd {
 	case "run":
-		client := &http.Client{
-			Timeout:       30 * time.Second,
-			CheckRedirect: noRedirect,
-		}
-		err = run(ctx, path, re, client, os.Stdout)
+		err = run(ctx, path, option{
+			match: match,
+			omit:  omit,
+			client: &http.Client{
+				Timeout:       30 * time.Second,
+				CheckRedirect: noRedirect,
+			},
+			out: os.Stdout,
+		})
 	case "fmt":
 		err = formatFile(path)
 	case "gen":
-		err = gen(ctx, *form, path, re, os.Stdout)
+		err = gen(ctx, *formFlag, path, match, os.Stdout)
 	}
 	if err != nil {
 		log.Fatal(err)
 	}
 }
 
-// pattern compiles the -match flag. It is nil for a command that has no such
-// flag and empty for one whose flag went unwritten, and either matches every
-// exchange in the file.
-func pattern(match *string) (*regexp.Regexp, error) {
-	if match == nil || *match == "" {
+// pattern compiles a flag that holds one: -match or -omit. It is nil for a
+// command that has no such flag and empty for one whose flag went unwritten,
+// and either leaves the caller its own default, every exchange or no header.
+func pattern(s *string) (*regexp.Regexp, error) {
+	if s == nil || *s == "" {
 		return nil, nil
 	}
-	return regexp.Compile(*match)
+	return regexp.Compile(*s)
 }
 
 // noRedirect keeps the client from following redirects, so the stored
@@ -225,14 +243,35 @@ type section struct {
 	resp []byte
 }
 
-// run sends the exchanges in file that re matches and stores each response
-// under the request that made it. It stops at the first failure, and stores
-// what the exchanges above it answered: they did happen, and the file is
-// where rr says so.
+// An option says how a run is to be made: which exchanges to send, which of
+// the headers they answer with to store, and what to send and report them
+// with. It is what the flags of rr run come to, and the zero value of each
+// field is the flag left unwritten. Nothing writes to one, so it is passed
+// by value and read where it is wanted.
+type option struct {
+	// match selects the exchanges to send by name, as -match does. A nil
+	// match, which is what an unwritten flag leaves, sends every one.
+	match *regexp.Regexp
+
+	// omit names the response headers not to store, as -omit does: it is
+	// matched against the canonical name of each header of an answer, and
+	// what it matches is left out of the file. A nil omit, which is what an
+	// unwritten flag leaves, stores every header. Content-Length is rr's own
+	// framing of the body it stores and outlives any omit; see [omitHeaders].
+	omit *regexp.Regexp
+
+	client *http.Client // what to send with
+	out    io.Writer    // where to report each answer as it is stored
+}
+
+// run sends the exchanges in path that opt.match names and stores each
+// response under the request that made it, less the headers opt.omit names.
+// It stops at the first failure, and stores what the exchanges above it
+// answered: they did happen, and the file is where rr says so.
 //
 // Every error it returns is an *fs.PathError naming the file, either from the
 // os call that failed or made here, so all of them read alike.
-func run(ctx context.Context, path string, re *regexp.Regexp, client *http.Client, w io.Writer) error {
+func run(ctx context.Context, path string, opt option) error {
 	data, mode, err := readFile(path)
 	if err != nil {
 		return err
@@ -241,7 +280,7 @@ func run(ctx context.Context, path string, re *regexp.Regexp, client *http.Clien
 	if err != nil {
 		return &fs.PathError{Op: "parse", Path: path, Err: err}
 	}
-	sel := pick(secs, re)
+	sel := pick(secs, opt.match)
 	if len(sel) == 0 {
 		return &fs.PathError{Op: "match", Path: path, Err: errors.New("no exchange matches")}
 	}
@@ -249,7 +288,7 @@ func run(ctx context.Context, path string, re *regexp.Regexp, client *http.Clien
 	var sendErr error
 	sent := 0
 	for _, i := range sel {
-		req, resp, err := send(ctx, client, secs[i], path)
+		req, resp, err := send(ctx, secs[i], path, opt)
 		if err != nil {
 			sendErr = err
 			break
@@ -257,12 +296,12 @@ func run(ctx context.Context, path string, re *regexp.Regexp, client *http.Clien
 		secs[i].req, secs[i].resp = req, resp
 		sent++
 
-		// Write the exchange to w as the file keeps it, so what rr prints and
+		// Report the exchange as the file keeps it, so what rr prints and
 		// what it stores are the same text under the same name.
-		var out bytes.Buffer
-		out.WriteString(marker(secs[i].name))
-		endLine(&out, resp)
-		if _, err := w.Write(out.Bytes()); err != nil {
+		var buf bytes.Buffer
+		buf.WriteString(marker(secs[i].name))
+		endLine(&buf, resp)
+		if _, err := opt.out.Write(buf.Bytes()); err != nil {
 			return err
 		}
 	}
@@ -276,9 +315,10 @@ func run(ctx context.Context, path string, re *regexp.Regexp, client *http.Clien
 }
 
 // send formats, expands and sends sec's request. It returns the request as it
-// is to be stored and the response in wire format; the request is stored
-// formatted, so what the file keeps is what went out.
-func send(ctx context.Context, client *http.Client, sec section, path string) (req, resp []byte, err error) {
+// is to be stored and the response in wire format, less the headers opt.omit
+// names; the request is stored formatted, so what the file keeps is what went
+// out.
+func send(ctx context.Context, sec section, path string, opt option) (req, resp []byte, err error) {
 	req = httpfmt.Format(sec.req)
 	expanded, err := expandEnv(req)
 	if err != nil {
@@ -288,11 +328,11 @@ func send(ctx context.Context, client *http.Client, sec section, path string) (r
 	if err != nil {
 		return nil, nil, fail("parse", path, sec.name, err)
 	}
-	answer, err := client.Do(out)
+	answer, err := opt.client.Do(out)
 	if err != nil {
 		return nil, nil, fail("send", path, sec.name, err)
 	}
-	resp, err = responseWire(answer)
+	resp, err = responseWire(answer, opt.omit)
 	if err != nil {
 		return nil, nil, fail("read", path, sec.name, err)
 	}
@@ -575,8 +615,8 @@ func parseRequest(ctx context.Context, b []byte) (*http.Request, error) {
 }
 
 // responseWire reads and closes resp's body and returns the response in
-// wire format, indenting JSON bodies.
-func responseWire(resp *http.Response) ([]byte, error) {
+// wire format, indenting JSON bodies and leaving out the headers omit names.
+func responseWire(resp *http.Response, omit *regexp.Regexp) ([]byte, error) {
 	body, err := io.ReadAll(resp.Body)
 	if cerr := resp.Body.Close(); err == nil {
 		err = cerr
@@ -584,9 +624,12 @@ func responseWire(resp *http.Response) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The body is shaped by what the server said it was, before any of the
+	// saying is dropped: -omit says what the file keeps, not what a body is.
 	if isJSON(resp.Header.Get("Content-Type")) {
 		body = indentJSON(body)
 	}
+	omitHeaders(resp, omit)
 
 	// Store the body as received rather than as framed: indenting changes
 	// its length, and a chunked body has no length to keep.
@@ -601,6 +644,30 @@ func responseWire(resp *http.Response) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// omitHeaders drops from resp the fields whose canonical name re matches:
+// the chatty half of an answer, a Date that moves every run and a request id
+// that is new every time, which a file is a better diff without. A nil re,
+// which is what an unwritten -omit leaves, drops nothing.
+//
+// Connection is cleared rather than deleted, [http.Response.Write] writing it
+// from the response and not from its headers. Content-Length is written from
+// there as well and outlives any re: counted after the body is indented, it
+// is rr's own framing of the text it stores rather than a header the server
+// sent.
+func omitHeaders(resp *http.Response, re *regexp.Regexp) {
+	if re == nil {
+		return
+	}
+	for name := range resp.Header {
+		if re.MatchString(name) {
+			delete(resp.Header, name) // the keys are canonical: Del would only recanonicalize
+		}
+	}
+	if re.MatchString("Connection") {
+		resp.Close = false
+	}
 }
 
 // isJSON reports whether a Content-Type declares a JSON body: application/json

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -341,7 +342,7 @@ hello
 			path := write(t, srv, tt.file)
 
 			var stdout bytes.Buffer
-			if err := run(t.Context(), path, nil, testClient(srv), &stdout); err != nil {
+			if err := run(t.Context(), path, option{client: testClient(srv), out: &stdout}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -391,7 +392,7 @@ b
 `
 	path := write(t, srv, file)
 	var stdout bytes.Buffer
-	if err := run(t.Context(), path, nil, testClient(srv), &stdout); err != nil {
+	if err := run(t.Context(), path, option{client: testClient(srv), out: &stdout}); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(order, []string{"/a", "/b"}) {
@@ -433,7 +434,11 @@ get {{url}}/b HTTP/1.1
 
 `
 	path := write(t, srv, file)
-	if err := run(t.Context(), path, regexp.MustCompile("^repos/"), testClient(srv), io.Discard); err != nil {
+	if err := run(t.Context(), path, option{
+		match:  regexp.MustCompile("^repos/"),
+		client: testClient(srv),
+		out:    io.Discard,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(t, srv, path); got != want {
@@ -447,12 +452,129 @@ func TestRunNoMatch(t *testing.T) {
 	file := "-- x --\nGET https://example.com/ HTTP/1.1\n\n"
 	path := write(t, nil, file)
 
-	err := run(t.Context(), path, regexp.MustCompile("nope"), http.DefaultClient, io.Discard)
+	err := run(t.Context(), path, option{
+		match:  regexp.MustCompile("nope"),
+		client: http.DefaultClient,
+		out:    io.Discard,
+	})
 	if err == nil || !strings.Contains(err.Error(), "no exchange matches") {
 		t.Fatalf("err = %v, want no exchange matches", err)
 	}
 	if got := read(t, nil, path); got != file {
 		t.Errorf("file changed:\n%s\n\nwant:\n%s", got, file)
+	}
+}
+
+// A Date that moves every run and a request id that is new every time say
+// nothing about an API and everything about the clock: -omit names them by
+// header, and rr stores the answer without them.
+func TestRunOmit(t *testing.T) {
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Date", "Mon, 01 Jan 2035 00:00:00 GMT")
+		w.Header().Set("X-Amz-Request-Id", "7f3c")
+		w.Header().Set("X-Request-Id", "abcd")
+		io.WriteString(w, "ok")
+	})
+
+	file := `-- x --
+GET {{url}}/ HTTP/1.1
+
+`
+	want := `-- x --
+GET {{url}}/ HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 2
+Content-Type: text/plain
+X-Request-Id: abcd
+
+ok
+`
+	path := write(t, srv, file)
+	var stdout bytes.Buffer
+	omit := regexp.MustCompile("^(Date|X-Amz-)")
+	if err := run(t.Context(), path, option{
+		omit:   omit,
+		client: testClient(srv),
+		out:    &stdout,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, srv, path); got != want {
+		t.Errorf("file after run:\n%s\n\nwant:\n%s", got, want)
+	}
+	if got, w := canon(srv, stdout.String()), stdoutFor(t, want); got != w {
+		t.Errorf("stdout:\n%s\n\nwant:\n%s", got, w)
+	}
+}
+
+// Content-Length is rr's own framing of the body it stores rather than a
+// header the server sent, so it outlives a pattern that matches every name.
+// The body is shaped before the names are dropped, too: what the server said
+// its body was decides how the body is stored, whether or not the file keeps
+// the saying.
+func TestRunOmitKeepsFraming(t *testing.T) {
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":7}`)
+	})
+
+	want := `-- x --
+GET {{url}}/ HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 13
+
+{
+  "id": 7
+}
+`
+	path := write(t, srv, "-- x --\nGET "+urlMark+"/ HTTP/1.1\n\n")
+	if err := run(t.Context(), path, option{
+		omit:   regexp.MustCompile(".*"),
+		client: testClient(srv),
+		out:    io.Discard,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, srv, path); got != want {
+		t.Errorf("file after run:\n%s\n\nwant:\n%s", got, want)
+	}
+}
+
+// The request is the writer's own text, and rr deletes no line of it: -omit
+// is about the answer, which is rr's to write.
+func TestRunOmitLeavesRequest(t *testing.T) {
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Date", "Mon, 01 Jan 2035 00:00:00 GMT")
+		io.WriteString(w, "ok")
+	})
+
+	file := `-- x --
+GET {{url}}/ HTTP/1.1
+Date: Mon, 01 Jan 2035 00:00:00 GMT
+X-Request-Id: 7
+
+`
+	want := file + `HTTP/1.1 200 OK
+Content-Length: 2
+Content-Type: text/plain
+
+ok
+`
+	path := write(t, srv, file)
+	omit := regexp.MustCompile("^(Date|X-Request-Id)$")
+	if err := run(t.Context(), path, option{
+		omit:   omit,
+		client: testClient(srv),
+		out:    io.Discard,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, srv, path); got != want {
+		t.Errorf("file after run:\n%s\n\nwant:\n%s", got, want)
 	}
 }
 
@@ -493,7 +615,7 @@ GET {{url}}/ HTTP/1.1
 
 `
 	path := write(t, srv, file)
-	err := run(t.Context(), path, nil, testClient(srv), io.Discard)
+	err := run(t.Context(), path, option{client: testClient(srv), out: io.Discard})
 
 	var perr *fs.PathError
 	if !errors.As(err, &perr) {
@@ -528,7 +650,7 @@ GET {{url}}/ HTTP/1.1
 
 `
 	path := write(t, srv, file)
-	if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
+	if err := run(t.Context(), path, option{client: testClient(srv), out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(t, srv, path); !strings.HasPrefix(got, "what this file is for\n\n-- x --\n") {
@@ -618,7 +740,10 @@ Host: two
 		t.Run(tt.name, func(t *testing.T) {
 			path := write(t, nil, tt.file)
 
-			err := run(t.Context(), path, nil, &http.Client{CheckRedirect: noRedirect}, io.Discard)
+			err := run(t.Context(), path, option{
+				client: &http.Client{CheckRedirect: noRedirect},
+				out:    io.Discard,
+			})
 
 			// Every error is an *fs.PathError naming the file. Matching on
 			// the inner error also keeps the temporary path, which embeds
@@ -758,7 +883,7 @@ X-EMPTY:
 	if err := os.Chmod(path, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
+	if err := run(t.Context(), path, option{client: testClient(srv), out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -786,7 +911,7 @@ func TestRunTwiceSendsSameBody(t *testing.T) {
 	// No trailing newline: rr adds one when it stores the file.
 	path := write(t, srv, "-- x --\nPOST "+urlMark+"/ HTTP/1.1\nHost: h\n\n{\"a\":1}")
 	for i := range 2 {
-		if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
+		if err := run(t.Context(), path, option{client: testClient(srv), out: io.Discard}); err != nil {
 			t.Fatalf("run %d: %v", i+1, err)
 		}
 	}
@@ -808,7 +933,7 @@ func TestRunSendsBodyWithoutTrailingNewline(t *testing.T) {
 	})
 
 	path := write(t, srv, "-- x --\nPOST "+urlMark+"/ HTTP/1.1\nHost: h\n\n{\"a\":1}\n\n\n")
-	if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
+	if err := run(t.Context(), path, option{client: testClient(srv), out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := <-seen, `{"a":1}`; got != want {
@@ -865,7 +990,7 @@ func TestRunCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, path, nil, testClient(srv), io.Discard) }()
+	go func() { done <- run(ctx, path, option{client: testClient(srv), out: io.Discard}) }()
 	<-started
 	cancel()
 
@@ -891,7 +1016,7 @@ func TestRunSendsRepeatedFields(t *testing.T) {
 	})
 
 	path := write(t, srv, "-- x --\nGET "+urlMark+"/ HTTP/1.1\nHost: h\nX-Tag: 1\nX-Tag: 2\n\n")
-	if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
+	if err := run(t.Context(), path, option{client: testClient(srv), out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	if tags := <-got; !slices.Equal(tags, []string{"1", "2"}) {
@@ -901,7 +1026,7 @@ func TestRunSendsRepeatedFields(t *testing.T) {
 
 func TestRunDirectory(t *testing.T) {
 	dir := t.TempDir()
-	err := run(t.Context(), dir, nil, http.DefaultClient, io.Discard)
+	err := run(t.Context(), dir, option{client: http.DefaultClient, out: io.Discard})
 	if err == nil || !strings.Contains(err.Error(), "is a directory") {
 		t.Fatalf("err = %v, want directory error", err)
 	}
@@ -925,7 +1050,7 @@ Authorization: Bearer ${TOKEN}
 
 `
 	path := write(t, srv, "-- x --\n"+req)
-	if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
+	if err := run(t.Context(), path, option{client: testClient(srv), out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -943,7 +1068,7 @@ func TestRunKeepsMode(t *testing.T) {
 	if err := os.Chmod(path, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
+	if err := run(t.Context(), path, option{client: testClient(srv), out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
@@ -963,7 +1088,7 @@ func TestStoredResponseIsWireFormat(t *testing.T) {
 	})
 
 	path := write(t, srv, "-- x --\nGET "+urlMark+"/ HTTP/1.1\nHost: example.com\n\n")
-	if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
+	if err := run(t.Context(), path, option{client: testClient(srv), out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -1209,6 +1334,44 @@ func TestPattern(t *testing.T) {
 	}
 }
 
+// A nil re, which is what an unwritten -omit leaves, drops nothing. Naming
+// Connection clears the field [http.Response.Write] writes that header from,
+// there being no use in deleting a header the writer puts back.
+func TestOmitHeaders(t *testing.T) {
+	answer := func() *http.Response {
+		return &http.Response{
+			Close: true,
+			Header: http.Header{
+				"Connection":       {"close"},
+				"Content-Type":     {"text/plain"},
+				"Date":             {"Mon, 01 Jan 2035 00:00:00 GMT"},
+				"X-Amz-Request-Id": {"7f3c"},
+				"X-Request-Id":     {"abcd"},
+			},
+		}
+	}
+	tests := []struct {
+		re    *regexp.Regexp
+		want  []string
+		close bool
+	}{
+		{nil, []string{"Connection", "Content-Type", "Date", "X-Amz-Request-Id", "X-Request-Id"}, true},
+		{regexp.MustCompile("^(Date|X-Amz-)"), []string{"Connection", "Content-Type", "X-Request-Id"}, true},
+		{regexp.MustCompile("Request-Id$"), []string{"Connection", "Content-Type", "Date"}, true},
+		{regexp.MustCompile("^Connection$"), []string{"Content-Type", "Date", "X-Amz-Request-Id", "X-Request-Id"}, false},
+		{regexp.MustCompile(".*"), nil, false},
+	}
+	for _, tt := range tests {
+		resp := answer()
+		omitHeaders(resp, tt.re)
+		if got := slices.Sorted(maps.Keys(resp.Header)); !slices.Equal(got, tt.want) {
+			t.Errorf("omitHeaders(%v) leaves %v, want %v", tt.re, got, tt.want)
+		}
+		if resp.Close != tt.close {
+			t.Errorf("omitHeaders(%v) leaves Close = %v, want %v", tt.re, resp.Close, tt.close)
+		}
+	}
+}
 func TestExpandEnv(t *testing.T) {
 	t.Setenv("NAME", "value")
 	t.Setenv("DOLLAR", "a$NAME b${NAME}")

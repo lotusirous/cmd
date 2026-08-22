@@ -4,7 +4,7 @@ NAME
      rr - send the HTTP requests stored in a file, store the responses in it
 
 SYNOPSIS
-     rr run [ -match regexp ] file
+     rr run [ -match regexp ] [ -omit regexp ] file
      rr fmt file
      rr gen [ -match regexp ] [ -form form ] file
 
@@ -61,6 +61,19 @@ DESCRIPTION
      that matches nothing is an error rather than a quiet success: a run
      that did nothing and a run that changed nothing leave the same clean
      diff.
+
+     -omit takes a regular expression too, matched against the canonical
+     name of each header of the answer, and stores no header it matches.  A
+     Date that moves every run and a request id that is new every time say
+     little about an API and much about the clock, and a file is a better
+     diff without them: -omit '^(Date|X-Amz-|X-Request-Id$)' leaves the
+     file saying what changed.  It is unanchored as -match is, and it names
+     response headers and nothing else: the request is the writer's own
+     text and keeps every line of it, a Date written there being one rr
+     sends.  A pattern that matches no header is no error, unlike one that
+     matches no exchange, omitting nothing being an honest outcome.  And
+     Content-Length outlives any pattern, being rr's framing of the body it
+     stores rather than a header the server sent.
 
      Rr fmt does that formatting on its own, over the whole file, and sends
      nothing.  A known method is upper-cased, CRLF and folded lines are
@@ -133,6 +146,11 @@ EXAMPLES
 
           $ rr run -match '^items/' api.rr
 
+     Keep the chatty half of an answer out of the file, so the diff says
+     what changed rather than when it was fetched:
+
+          $ rr run -omit '^(Date|X-Amz-|X-Request-Id$)' api.rr
+
      Put a file written by hand into the form rr stores it in:
 
           $ cat items.rr
@@ -196,7 +214,9 @@ DIAGNOSTICS
      match for a pattern that selects nothing, expand for a variable the
      environment does not hold, send for a request that did not go, and
      read for a response that did not arrive whole.  Every unset variable
-     in an exchange is named at once, rather than one to a run.
+     in an exchange is named at once, rather than one to a run.  A pattern
+     that does not compile is reported under the flag that held it, before
+     the file is read.
 
 BUGS
      Rr has no cookie jar, no OAuth flow, and no assertions.  An exchange
