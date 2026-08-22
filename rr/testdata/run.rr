@@ -1,0 +1,227 @@
+# expect X-Test: yes
+-- sends the request headers --
+GET {{url}}/ HTTP/1.1
+Host: example.com
+X-Test: yes
+
+	-- sends the request headers --
+	GET {{url}}/ HTTP/1.1
+	Host: example.com
+	X-Test: yes
+
+	HTTP/1.1 200 OK
+	Content-Length: 5
+	Content-Type: text/plain
+
+	hello
+-- indents a json response --
+POST {{url}}/ HTTP/1.1
+Host: example.com
+Content-Length: 4
+
+body
+	-- indents a json response --
+	POST {{url}}/ HTTP/1.1
+	Host: example.com
+
+	body
+	HTTP/1.1 200 OK
+	Content-Length: 26
+	Content-Type: application/json
+
+	{
+	  "ok": true,
+	  "n": 1
+	}
+-- replaces an old response --
+GET {{url}}/ HTTP/1.1
+Host: example.com
+
+HTTP/1.1 200 OK
+Content-Length: 2
+Content-Type: text/plain
+
+v1
+	-- replaces an old response --
+	GET {{url}}/ HTTP/1.1
+	Host: example.com
+
+	HTTP/1.1 200 OK
+	Content-Length: 2
+	Content-Type: text/plain
+
+	v2
+# chunked
+# note a chunked response has no length to keep, so it is stored with the length of the body written
+-- stores a chunked response plainly --
+GET {{url}}/ HTTP/1.1
+Host: example.com
+
+	-- stores a chunked response plainly --
+	GET {{url}}/ HTTP/1.1
+	Host: example.com
+
+	HTTP/1.1 200 OK
+	Content-Length: 7
+	Content-Type: text/plain
+
+	chunked
+# note a hand-written exchange often stops after the last header: unterminated, but unambiguous
+-- completes an unterminated header block --
+GET {{url}}/ HTTP/1.1
+Host: example.com
+	-- completes an unterminated header block --
+	GET {{url}}/ HTTP/1.1
+	Host: example.com
+
+	HTTP/1.1 200 OK
+	Content-Length: 5
+	Content-Type: text/plain
+
+	hello
+# echo
+# note http.ReadRequest would drop this body for want of framing
+-- frames a body with no length --
+POST {{url}}/ HTTP/1.1
+Host: example.com
+Content-Type: application/json
+
+{"a":1}
+	-- frames a body with no length --
+	POST {{url}}/ HTTP/1.1
+	Host: example.com
+	Content-Type: application/json
+
+	{
+	  "a": 1
+	}
+	HTTP/1.1 200 OK
+	Content-Length: 12
+	Content-Type: text/plain
+
+	{
+	  "a": 1
+	}
+# echo
+# note ... and would send only the first two bytes of it here
+-- drops a stale content-length --
+POST {{url}}/ HTTP/1.1
+Host: example.com
+Content-Length: 2
+
+{"a":1}
+	-- drops a stale content-length --
+	POST {{url}}/ HTTP/1.1
+	Host: example.com
+
+	{"a":1}
+	HTTP/1.1 200 OK
+	Content-Length: 7
+	Content-Type: text/plain
+
+	{"a":1}
+# note the body parses as JSON, but text/plain says it is not one
+-- indents only what says it is json --
+GET {{url}}/ HTTP/1.1
+Host: example.com
+
+	-- indents only what says it is json --
+	GET {{url}}/ HTTP/1.1
+	Host: example.com
+
+	HTTP/1.1 200 OK
+	Content-Length: 7
+	Content-Type: text/plain
+
+	{"a":1}
+# note an absolute request URI carries the host, so Host is optional
+-- needs no host header --
+GET {{url}}/ HTTP/1.1
+
+	-- needs no host header --
+	GET {{url}}/ HTTP/1.1
+
+	HTTP/1.1 200 OK
+	Content-Length: 5
+	Content-Type: text/plain
+
+	hello
+# echo
+-- formats the request it sends --
+post {{url}}/ HTTP/1.1
+content-type:application/json
+content-length: 2
+X-EMPTY:	
+
+{"a":1}
+	-- formats the request it sends --
+	POST {{url}}/ HTTP/1.1
+	Content-Type: application/json
+	X-EMPTY:
+
+	{
+	  "a": 1
+	}
+	HTTP/1.1 200 OK
+	Content-Length: 12
+	Content-Type: text/plain
+
+	{
+	  "a": 1
+	}
+what this file is for
+
+-- keeps the comment --
+GET {{url}}/ HTTP/1.1
+
+	what this file is for
+
+	-- keeps the comment --
+	GET {{url}}/ HTTP/1.1
+
+	HTTP/1.1 200 OK
+	Content-Length: 2
+	Content-Type: text/plain
+
+	ok
+# env TOKEN=secret
+# expect Authorization: Bearer secret
+# note what is sent carries the value; what is stored keeps the variable, so the file stays safe to commit
+-- keeps variables on disk --
+GET {{url}}/ HTTP/1.1
+Host: example.com
+Authorization: Bearer ${TOKEN}
+
+	-- keeps variables on disk --
+	GET {{url}}/ HTTP/1.1
+	Host: example.com
+	Authorization: Bearer ${TOKEN}
+
+	HTTP/1.1 200 OK
+	Content-Length: 2
+	Content-Type: text/plain
+
+	ok
+# note a file is a collection: every exchange is sent, in the order the file has them
+-- sends every exchange in order --
+GET {{url}}/a HTTP/1.1
+
+-- two --
+GET {{url}}/b HTTP/1.1
+
+	-- sends every exchange in order --
+	GET {{url}}/a HTTP/1.1
+
+	HTTP/1.1 200 OK
+	Content-Length: 1
+	Content-Type: text/plain
+
+	a
+	-- two --
+	GET {{url}}/b HTTP/1.1
+
+	HTTP/1.1 200 OK
+	Content-Length: 1
+	Content-Type: text/plain
+
+	b

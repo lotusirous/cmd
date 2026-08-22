@@ -1,0 +1,42 @@
+# fmt
+-- formats the request and keeps the response --
+get https://example.com/ HTTP/1.1
+content-type:application/json
+content-length: 2
+
+{"a":1}
+HTTP/1.1 200 OK
+Content-Length: 2
+
+hi
+	-- formats the request and keeps the response --
+	GET https://example.com/ HTTP/1.1
+	Content-Type: application/json
+
+	{
+	  "a": 1
+	}
+	HTTP/1.1 200 OK
+	Content-Length: 2
+
+	hi
+# fmt
+# note a name is the same name however it was spaced, and the comment above the first marker is kept
+notes
+
+--   spaced   --
+get https://example.com/ HTTP/1.1
+	notes
+
+	-- spaced --
+	GET https://example.com/ HTTP/1.1
+
+# fmt
+# note an exchange with no response yet gains no response
+-- adds no response --
+get https://example.com/ HTTP/1.1
+host: h
+	-- adds no response --
+	GET https://example.com/ HTTP/1.1
+	Host: h
+

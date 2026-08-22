@@ -1,0 +1,59 @@
+# gen
+-- a method and a url alone --
+get https://example.com/items HTTP/1.1
+	# a method and a url alone
+	curl -X GET https://example.com/items
+# gen
+# note names come out canonical and sorted, a header map having kept neither the spelling nor the order the file
+# note had, and the body comes out as httpfmt indented it
+-- headers and a json body --
+post https://example.com/items HTTP/1.1
+content-type: application/json
+x-note: it's fine
+accept: a
+accept: b
+x-empty:
+
+{"name": "x"}
+	# headers and a json body
+	curl -X POST https://example.com/items \
+	  -H 'Accept: a' \
+	  -H 'Accept: b' \
+	  -H 'Content-Type: application/json' \
+	  -H 'X-Empty;' \
+	  -H 'X-Note: it'\''s fine' \
+	  --data-raw '{
+	  "name": "x"
+	}'
+# gen
+-- no part of a stored response --
+GET https://example.com/ HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 2
+
+hi
+	# no part of a stored response
+	curl -X GET https://example.com/
+# gen
+# note one command an exchange, named above it: the comment survives a pipe to a shell
+-- every exchange in the file --
+GET https://example.com/a HTTP/1.1
+-- b --
+GET https://example.com/b HTTP/1.1
+	# every exchange in the file
+	curl -X GET https://example.com/a
+
+	# b
+	curl -X GET https://example.com/b
+# gen -match ^the
+-- writes only what it names --
+GET https://example.com/a HTTP/1.1
+-- the one it names --
+GET https://example.com/b HTTP/1.1
+	# the one it names
+	curl -X GET https://example.com/b
+# gen -match nope
+# error no exchange matches
+-- match names nothing --
+GET https://example.com/ HTTP/1.1

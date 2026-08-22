@@ -1,0 +1,28 @@
+# run -match ^sends
+-- sends only what it names --
+GET {{url}}/a HTTP/1.1
+
+-- and not this one --
+get {{url}}/b HTTP/1.1
+
+	-- sends only what it names --
+	GET {{url}}/a HTTP/1.1
+
+	HTTP/1.1 200 OK
+	Content-Length: 2
+	Content-Type: text/plain
+
+	ok
+	-- and not this one --
+	get {{url}}/b HTTP/1.1
+
+# run -match nope
+# error no exchange matches
+# note a pattern that matches nothing is an error rather than a quiet success: a run that did nothing and a run
+# note that changed nothing leave the same clean diff
+-- names nothing --
+GET https://example.com/ HTTP/1.1
+
+	-- names nothing --
+	GET https://example.com/ HTTP/1.1
+

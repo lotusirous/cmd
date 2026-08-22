@@ -1,0 +1,111 @@
+# error b:
+# note what answered above the failure is stored, so the diff says how far the run got
+-- stops at the first failure --
+GET {{url}}/ HTTP/1.1
+
+-- b --
+GET http://127.0.0.1:1/nope HTTP/1.1
+
+-- c --
+GET {{url}}/ HTTP/1.1
+
+	-- stops at the first failure --
+	GET {{url}}/ HTTP/1.1
+
+	HTTP/1.1 200 OK
+	Content-Length: 2
+	Content-Type: text/plain
+
+	ok
+	-- b --
+	GET http://127.0.0.1:1/nope HTTP/1.1
+
+	-- c --
+	GET {{url}}/ HTTP/1.1
+
+# error absolute
+-- refuses a relative request uri --
+GET /path HTTP/1.1
+Host: example.com
+
+	-- refuses a relative request uri --
+	GET /path HTTP/1.1
+	Host: example.com
+
+# error unset: ALSO, MISSING
+-- names every unset variable --
+GET https://example.com/$ALSO HTTP/1.1
+Host: example.com
+Authorization: Bearer ${MISSING}
+
+	-- names every unset variable --
+	GET https://example.com/$ALSO HTTP/1.1
+	Host: example.com
+	Authorization: Bearer ${MISSING}
+
+# error 127.0.0.1:1
+-- keeps the old response when the server cannot be reached --
+GET http://127.0.0.1:1/nope HTTP/1.1
+Host: 127.0.0.1:1
+
+HTTP/1.1 500 Old
+Content-Length: 3
+
+old
+	-- keeps the old response when the server cannot be reached --
+	GET http://127.0.0.1:1/nope HTTP/1.1
+	Host: 127.0.0.1:1
+
+	HTTP/1.1 500 Old
+	Content-Length: 3
+
+	old
+# error too many Host headers
+# note RFC 9112, 3.2: a request with two Host lines is malformed, and http.ReadRequest refuses it rather than
+# note pick one
+-- refuses two host headers --
+GET https://example.com/ HTTP/1.1
+Host: one
+Host: two
+
+	-- refuses two host headers --
+	GET https://example.com/ HTTP/1.1
+	Host: one
+	Host: two
+
+# error no exchange
+# note a file with no marker at all opens no exchange
+GET https://example.com/ HTTP/1.1
+
+	GET https://example.com/ HTTP/1.1
+
+# error two exchanges named of one name
+-- of one name --
+GET https://example.com/a HTTP/1.1
+
+-- of one name --
+GET https://example.com/b HTTP/1.1
+
+	-- of one name --
+	GET https://example.com/a HTTP/1.1
+
+	-- of one name --
+	GET https://example.com/b HTTP/1.1
+
+# error no name
+# note a marker with room for a name, and no name in it
+--  --
+GET https://example.com/ HTTP/1.1
+
+	--  --
+	GET https://example.com/ HTTP/1.1
+
+# error exchange all response has no request
+-- all response --
+HTTP/1.1 200 OK
+Content-Length: 0
+
+	-- all response --
+	HTTP/1.1 200 OK
+	Content-Length: 0
+

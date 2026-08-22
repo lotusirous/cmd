@@ -1,0 +1,49 @@
+# run -omit ^(Date|X-Amz-)
+# reply Date: Mon, 01 Jan 2035 00:00:00 GMT
+# reply X-Amz-Request-Id: 7f3c
+-- drops the chatty headers --
+GET {{url}}/ HTTP/1.1
+
+	-- drops the chatty headers --
+	GET {{url}}/ HTTP/1.1
+
+	HTTP/1.1 200 OK
+	Content-Length: 2
+	Content-Type: text/plain
+	X-Request-Id: abcd
+
+	ok
+# run -omit .*
+# reply Content-Type: application/json
+# note Content-Length is rr's own framing of the body it stores, counted after the body is indented, so it
+# note outlives a pattern that matches every name
+-- keeps the framing --
+GET {{url}}/ HTTP/1.1
+
+	-- keeps the framing --
+	GET {{url}}/ HTTP/1.1
+
+	HTTP/1.1 200 OK
+	Content-Length: 13
+
+	{
+	  "id": 7
+	}
+# run -omit ^(Date|X-Request-Id)$
+# reply Date: Mon, 01 Jan 2035 00:00:00 GMT
+# note the request is the writer's own text, and rr deletes no line of it
+-- leaves the request --
+GET {{url}}/ HTTP/1.1
+Date: Mon, 01 Jan 2035 00:00:00 GMT
+X-Request-Id: 7
+
+	-- leaves the request --
+	GET {{url}}/ HTTP/1.1
+	Date: Mon, 01 Jan 2035 00:00:00 GMT
+	X-Request-Id: 7
+
+	HTTP/1.1 200 OK
+	Content-Length: 2
+	Content-Type: text/plain
+
+	ok
