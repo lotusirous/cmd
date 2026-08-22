@@ -130,15 +130,6 @@ import (
 	"github.com/lotusirous/cmd/rr/httpfmt"
 )
 
-// The two ends of a marker, the line that opens an exchange. A line that
-// begins with one, ends with the other, and has room for a name between is a
-// marker; every other line is text, so a body line of dashes stays a body
-// line.
-var (
-	markPre = []byte("-- ")
-	markSuf = []byte(" --")
-)
-
 const usageText = `usage: rr run [-match regexp] [-omit regexp] file	send the requests in file, store the responses in it
        rr fmt file	format the requests in file, send nothing
        rr gen [-match regexp] [-form form] file	write the requests as curl commands
@@ -235,14 +226,6 @@ func noRedirect(*http.Request, []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
-// A section is one named exchange: the request as the file has it, and the
-// response last stored under it, empty until the request has been sent.
-type section struct {
-	name string
-	req  []byte
-	resp []byte
-}
-
 // An option says how a run is to be made: which exchanges to send, which of
 // the headers they answer with to store, and what to send and report them
 // with. It is what the flags of rr run come to, and the zero value of each
@@ -269,72 +252,84 @@ type option struct {
 // It stops at the first failure, and stores what the exchanges above it
 // answered: they did happen, and the file is where rr says so.
 //
-// Every error it returns is an *fs.PathError naming the file, either from the
-// os call that failed or made here, so all of them read alike.
+// Every error it returns names the file, an *fs.PathError from the os call
+// that failed or made here, so all of them read alike. A run can fail twice
+// over, and then it returns the two joined.
 func run(ctx context.Context, path string, opt option) error {
 	data, mode, err := readFile(path)
 	if err != nil {
 		return err
 	}
-	head, secs, err := splitFile(data)
+	head, exchanges, err := parse(data)
 	if err != nil {
 		return &fs.PathError{Op: "parse", Path: path, Err: err}
 	}
-	sel := pick(secs, opt.match)
-	if len(sel) == 0 {
-		return &fs.PathError{Op: "match", Path: path, Err: errors.New("no exchange matches")}
-	}
-
-	var sendErr error
-	sent := 0
-	for _, i := range sel {
-		req, resp, err := send(ctx, secs[i], path, opt)
-		if err != nil {
-			sendErr = err
-			break
-		}
-		secs[i].req, secs[i].resp = req, resp
-		sent++
-
-		// Report the exchange as the file keeps it, so what rr prints and
-		// what it stores are the same text under the same name.
-		var buf bytes.Buffer
-		buf.WriteString(marker(secs[i].name))
-		endLine(&buf, resp)
-		if _, err := opt.out.Write(buf.Bytes()); err != nil {
-			return err
-		}
-	}
+	sent, err := sendAll(ctx, exchanges, path, opt)
 	if sent == 0 {
-		return sendErr // nothing answered: leave the file as it was
+		return err // nothing answered: the file is left as it was
 	}
-	if err := rewriteFile(path, mode, head, secs); err != nil && sendErr == nil {
-		sendErr = err
-	}
-	return sendErr
+
+	// What answered is stored however the run ended, so the diff says how far
+	// it got.
+	return errors.Join(err, rewriteFile(path, mode, head, exchanges))
 }
 
-// send formats, expands and sends sec's request. It returns the request as it
+// sendAll sends the exchanges opt.match names, in the order the file has
+// them, storing each response under the request that made it and reporting it
+// to opt.out as it goes. It stops at the first failure, an exchange being
+// free to rely on the one above it.
+//
+// It returns how many exchanges it stored: the caller writes the file only
+// when that is not zero.
+func sendAll(ctx context.Context, exchanges []exchange, path string, opt option) (int, error) {
+	sel := pick(exchanges, opt.match)
+	if len(sel) == 0 {
+		return 0, &fs.PathError{Op: "match", Path: path, Err: errors.New("no exchange matches")}
+	}
+	for n, i := range sel {
+		req, resp, err := send(ctx, exchanges[i], path, opt)
+		if err != nil {
+			return n, err
+		}
+		exchanges[i].req, exchanges[i].resp = req, resp
+		if err := report(opt.out, exchanges[i]); err != nil {
+			return n + 1, err // the answer is stored: only the saying of it failed
+		}
+	}
+	return len(sel), nil
+}
+
+// report writes ex to w as the file keeps it, so that what rr prints and
+// what it stores are the same text under the same name.
+func report(w io.Writer, ex exchange) error {
+	var buf bytes.Buffer
+	buf.WriteString(markerLine(ex.name))
+	endLine(&buf, ex.resp)
+	_, err := w.Write(buf.Bytes())
+	return err
+}
+
+// send formats, expands and sends ex's request. It returns the request as it
 // is to be stored and the response in wire format, less the headers opt.omit
 // names; the request is stored formatted, so what the file keeps is what went
 // out.
-func send(ctx context.Context, sec section, path string, opt option) (req, resp []byte, err error) {
-	req = httpfmt.Format(sec.req)
+func send(ctx context.Context, ex exchange, path string, opt option) (req, resp []byte, err error) {
+	req = httpfmt.Format(ex.req)
 	expanded, err := expandEnv(req)
 	if err != nil {
-		return nil, nil, fail("expand", path, sec.name, err)
+		return nil, nil, fail("expand", path, ex.name, err)
 	}
 	out, err := parseRequest(ctx, expanded)
 	if err != nil {
-		return nil, nil, fail("parse", path, sec.name, err)
+		return nil, nil, fail("parse", path, ex.name, err)
 	}
 	answer, err := opt.client.Do(out)
 	if err != nil {
-		return nil, nil, fail("send", path, sec.name, err)
+		return nil, nil, fail("send", path, ex.name, err)
 	}
 	resp, err = responseWire(answer, opt.omit)
 	if err != nil {
-		return nil, nil, fail("read", path, sec.name, err)
+		return nil, nil, fail("read", path, ex.name, err)
 	}
 	return req, resp, nil
 }
@@ -355,14 +350,14 @@ func formatFile(path string) error {
 	if err != nil {
 		return err
 	}
-	head, secs, err := splitFile(data)
+	head, exchanges, err := parse(data)
 	if err != nil {
 		return &fs.PathError{Op: "parse", Path: path, Err: err}
 	}
-	for i := range secs {
-		secs[i].req = httpfmt.Format(secs[i].req)
+	for i := range exchanges {
+		exchanges[i].req = httpfmt.Format(exchanges[i].req)
 	}
-	return rewriteFile(path, mode, head, secs)
+	return rewriteFile(path, mode, head, exchanges)
 }
 
 // gen writes the requests in path that re matches in another form, sending
@@ -382,30 +377,30 @@ func gen(ctx context.Context, form, path string, re *regexp.Regexp, w io.Writer)
 	if err != nil {
 		return err
 	}
-	_, secs, err := splitFile(data)
+	_, exchanges, err := parse(data)
 	if err != nil {
 		return &fs.PathError{Op: "parse", Path: path, Err: err}
 	}
-	sel := pick(secs, re)
+	sel := pick(exchanges, re)
 	if len(sel) == 0 {
 		return &fs.PathError{Op: "match", Path: path, Err: errors.New("no exchange matches")}
 	}
 
 	for n, i := range sel {
-		expanded, err := expandEnv(httpfmt.Format(secs[i].req))
+		expanded, err := expandEnv(httpfmt.Format(exchanges[i].req))
 		if err != nil {
-			return fail("expand", path, secs[i].name, err)
+			return fail("expand", path, exchanges[i].name, err)
 		}
 		req, err := parseRequest(ctx, expanded)
 		if err != nil {
-			return fail("parse", path, secs[i].name, err)
+			return fail("parse", path, exchanges[i].name, err)
 		}
 		if n > 0 {
 			if _, err := io.WriteString(w, "\n"); err != nil {
 				return err
 			}
 		}
-		if _, err := fmt.Fprintf(w, "# %s\n", secs[i].name); err != nil {
+		if _, err := fmt.Fprintf(w, "# %s\n", exchanges[i].name); err != nil {
 			return err
 		}
 		if err := write(w, req); err != nil {
@@ -415,124 +410,12 @@ func gen(ctx context.Context, form, path string, re *regexp.Regexp, w io.Writer)
 	return nil
 }
 
-// readFile returns the contents of path and the mode to store it back under.
-// A directory needs no test of its own: os.ReadFile reports one.
-func readFile(path string) ([]byte, os.FileMode, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, 0, err
-	}
-	data, err := os.ReadFile(path)
-	return data, info.Mode().Perm(), err
-}
-
-// splitFile returns the text before the first marker line, which is a comment,
-// and the exchanges the markers open. A name has to be there and has to be its
-// own: it is what -match selects and what an error quotes, so two exchanges
-// answering to one name is a file written wrong.
-func splitFile(data []byte) (head []byte, secs []section, err error) {
-	seen := make(map[string]bool)
-	head = data
-	name, start := "", 0
-	for off := 0; off < len(data); {
-		line, _, _ := bytes.Cut(data[off:], []byte("\n"))
-		next := off + len(line) + 1
-		mark, ok := markerName(bytes.TrimSuffix(line, []byte("\r")))
-		if !ok {
-			off = next
-			continue
-		}
-		if name == "" {
-			head = data[:off] // nothing is open yet: this opens the first
-		} else {
-			secs = append(secs, cut(name, data[start:off]))
-		}
-		switch {
-		case mark == "":
-			return nil, nil, errors.New("exchange with no name")
-		case seen[mark]:
-			return nil, nil, fmt.Errorf("two exchanges named %s", mark)
-		}
-		seen[mark] = true
-		name, start, off = mark, next, next
-	}
-	if name != "" {
-		secs = append(secs, cut(name, data[start:]))
-	}
-	if len(secs) == 0 {
-		return nil, nil, errors.New("no exchange")
-	}
-	for _, s := range secs {
-		if len(bytes.TrimSpace(s.req)) == 0 {
-			return nil, nil, fmt.Errorf("exchange %s has no request", s.name)
-		}
-	}
-	return head, secs, nil
-}
-
-// cut returns the exchange that name and text hold, dividing text at the line
-// that begins the stored response. One that has never been sent has no such
-// line, and no response.
-func cut(name string, text []byte) section {
-	for off := 0; off < len(text); {
-		line, _, _ := bytes.Cut(text[off:], []byte("\n"))
-		if isStatus(bytes.TrimSuffix(line, []byte("\r"))) {
-			return section{name, text[:off], text[off:]}
-		}
-		off += len(line) + 1
-	}
-	return section{name: name, req: text}
-}
-
-// markerName returns the name a marker line holds, and whether line is one.
-func markerName(line []byte) (string, bool) {
-	if len(line) < len(markPre)+len(markSuf) ||
-		!bytes.HasPrefix(line, markPre) || !bytes.HasSuffix(line, markSuf) {
-		return "", false
-	}
-	return string(bytes.TrimSpace(line[len(markPre) : len(line)-len(markSuf)])), true
-}
-
-// marker returns the line that opens the exchange named name.
-func marker(name string) string {
-	return string(markPre) + name + string(markSuf) + "\n"
-}
-
-// isStatus reports whether line begins a stored response, as
-// [http.Response.Write] writes one: HTTP/1.1 200 OK. The version is read
-// rather than assumed, a request over TLS having possibly negotiated HTTP/2.
-func isStatus(line []byte) bool {
-	version, rest, ok := bytes.Cut(line, []byte(" "))
-	if !ok || !bytes.HasPrefix(version, []byte("HTTP/")) {
-		return false
-	}
-	major, minor, ok := bytes.Cut(version[len("HTTP/"):], []byte("."))
-	if !ok || !digits(major) || !digits(minor) {
-		return false
-	}
-	code, _, _ := bytes.Cut(rest, []byte(" "))
-	return len(code) == 3 && digits(code)
-}
-
-// digits reports whether b is one or more ASCII digits and nothing else.
-func digits(b []byte) bool {
-	if len(b) == 0 {
-		return false
-	}
-	for _, c := range b {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
-}
-
 // pick returns the indexes of the exchanges whose name re matches, in the
 // order the file has them. A nil re, which is what no -match flag leaves,
 // matches every one.
-func pick(secs []section, re *regexp.Regexp) []int {
+func pick(exchanges []exchange, re *regexp.Regexp) []int {
 	var sel []int
-	for i, s := range secs {
+	for i, s := range exchanges {
 		if re == nil || re.MatchString(s.name) {
 			sel = append(sel, i)
 		}
@@ -689,33 +572,4 @@ func indentJSON(body []byte) []byte {
 		return body
 	}
 	return out.Bytes()
-}
-
-// rewriteFile stores head and secs in path. Writing in place keeps the mode,
-// the owner, and any link or symbolic link to the file; mode applies only if
-// it has gone missing since it was read. A write that fails midway leaves the
-// file truncated, which is the price of not renaming a temporary over it: the
-// rename replaces the file, and with it everything the file system knew about
-// the one the user made.
-func rewriteFile(path string, mode os.FileMode, head []byte, secs []section) error {
-	var buf bytes.Buffer
-	endLine(&buf, head)
-	for _, s := range secs {
-		buf.WriteString(marker(s.name))
-		endLine(&buf, s.req)
-		endLine(&buf, s.resp)
-	}
-	return os.WriteFile(path, buf.Bytes(), mode)
-}
-
-// endLine writes b and ends the line it leaves open, if any. What follows is
-// a marker, and a marker is a line of its own.
-func endLine(buf *bytes.Buffer, b []byte) {
-	if len(b) == 0 {
-		return
-	}
-	buf.Write(b)
-	if b[len(b)-1] != '\n' {
-		buf.WriteByte('\n')
-	}
 }
