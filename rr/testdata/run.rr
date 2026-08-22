@@ -23,6 +23,7 @@ body
 	-- indents a json response --
 	POST {{url}}/ HTTP/1.1
 	Host: example.com
+	Content-Length: 4
 
 	body
 	HTTP/1.1 200 OK
@@ -66,14 +67,15 @@ Host: example.com
 	Content-Type: text/plain
 
 	chunked
-# note a hand-written exchange often stops after the last header: unterminated, but unambiguous
--- completes an unterminated header block --
+# note a hand-written exchange often stops after the last header. The block is
+# note ended on the way to the wire and not in the file, which run does not
+# note rewrite: rr fmt is what ends it there.
+-- sends an exchange that ends after the last header --
 GET {{url}}/ HTTP/1.1
 Host: example.com
-	-- completes an unterminated header block --
+	-- sends an exchange that ends after the last header --
 	GET {{url}}/ HTTP/1.1
 	Host: example.com
-
 	HTTP/1.1 200 OK
 	Content-Length: 5
 	Content-Type: text/plain
@@ -92,27 +94,26 @@ Content-Type: application/json
 	Host: example.com
 	Content-Type: application/json
 
-	{
-	  "a": 1
-	}
+	{"a":1}
 	HTTP/1.1 200 OK
-	Content-Length: 12
+	Content-Length: 7
 	Content-Type: text/plain
 
-	{
-	  "a": 1
-	}
+	{"a":1}
 # echo
-# note ... and would send only the first two bytes of it here
--- drops a stale content-length --
+# note ... and would send only the first two bytes of it here. Rr frames the
+# note body itself, so the length the file holds is ignored on the wire and
+# note kept on disk until rr fmt drops it.
+-- ignores a stale content-length --
 POST {{url}}/ HTTP/1.1
 Host: example.com
 Content-Length: 2
 
 {"a":1}
-	-- drops a stale content-length --
+	-- ignores a stale content-length --
 	POST {{url}}/ HTTP/1.1
 	Host: example.com
+	Content-Length: 2
 
 	{"a":1}
 	HTTP/1.1 200 OK
@@ -147,28 +148,28 @@ GET {{url}}/ HTTP/1.1
 
 	hello
 # echo
--- formats the request it sends --
+# note a run rewrites the answer and nothing else. The lower-case method, the
+# note unspaced header and the unindented body are the file's own text, and rr
+# note fmt is what makes them canonical.
+-- sends the request as the file writes it --
 post {{url}}/ HTTP/1.1
 content-type:application/json
 content-length: 2
 X-EMPTY:	
 
 {"a":1}
-	-- formats the request it sends --
-	POST {{url}}/ HTTP/1.1
-	Content-Type: application/json
-	X-EMPTY:
+	-- sends the request as the file writes it --
+	post {{url}}/ HTTP/1.1
+	content-type:application/json
+	content-length: 2
+	X-EMPTY:	
 
-	{
-	  "a": 1
-	}
+	{"a":1}
 	HTTP/1.1 200 OK
-	Content-Length: 12
+	Content-Length: 7
 	Content-Type: text/plain
 
-	{
-	  "a": 1
-	}
+	{"a":1}
 what this file is for
 
 -- keeps the comment --

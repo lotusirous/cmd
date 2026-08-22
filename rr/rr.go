@@ -2,35 +2,66 @@ package main
 
 // The rr file itself: the markers that open an exchange, the two halves each
 // one holds, and the reading, parsing and writing of the text on disk. What
-// parse reads, rewriteFile writes.
+// Parse reads, text writes.
 
 import (
 	"bytes"
 	"errors"
 	"fmt"
 	"os"
+	"slices"
+
+	"github.com/lotusirous/cmd/rr/httpfmt"
 )
 
-// The two ends of a marker, the line that opens an exchange. A line that
-// begins with one, ends with the other, and has room for a name between is a
-// marker; every other line is text, so a body line of dashes stays a body
-// line.
 var (
 	marker    = []byte("-- ")
 	markerEnd = []byte(" --")
 )
 
-// An exchange is what a marker line opens and names: the request as the file
+// A File is a collection of exchanges.
+type File struct {
+	Comment   []byte
+	Exchanges []Exchange
+}
+
+// An Exchange is what a marker line opens and names: the request as the file
 // has it, and the response last stored under it, empty until the request has
 // been sent. It is the two halves the tool is named for.
-type exchange struct {
+type Exchange struct {
 	name string
 	req  []byte
 	resp []byte
 }
 
-// readFile returns the contents of path and the mode to store it back under.
-// A directory needs no test of its own: os.ReadFile reports one.
+// text returns the text f is kept as: the comment, then each exchange under
+// the marker line naming it, request first and stored response after. A part
+// that does not end in \n has one added.
+func text(f *File) []byte {
+	var buf bytes.Buffer
+	endLine(&buf, f.Comment)
+	for _, ex := range f.Exchanges {
+		buf.WriteString(markerLine(ex.name))
+		endLine(&buf, ex.req)
+		endLine(&buf, ex.resp)
+	}
+	return buf.Bytes()
+}
+
+// Format returns the text of f with the request of every exchange in canonical
+// form, as [httpfmt.Format] writes one. The comment and the stored responses
+// are returned unchanged, and f is not modified.
+func Format(f *File) []byte {
+	c := *f
+	c.Exchanges = slices.Clone(f.Exchanges)
+	for i := range c.Exchanges {
+		c.Exchanges[i].req = httpfmt.Format(c.Exchanges[i].req)
+	}
+	return text(&c)
+}
+
+// readFile returns the contents of path and the permission bits of its mode,
+// which is the mode to store it back under.
 func readFile(path string) ([]byte, os.FileMode, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -40,13 +71,14 @@ func readFile(path string) ([]byte, os.FileMode, error) {
 	return data, info.Mode().Perm(), err
 }
 
-// parse returns the text before the first marker line, which is a comment,
-// and the exchanges the markers open. A name has to be there and has to be its
-// own: it is what -match selects and what an error quotes, so two exchanges
-// answering to one name is a file written wrong.
-func parse(data []byte) (head []byte, exchanges []exchange, err error) {
+// Parse returns the [File] that data holds: the text before the first marker
+// line as the comment, and one [Exchange] for each marker line after it. Parse
+// returns an error if data holds no exchange, or an exchange with no name, a
+// name another exchange already has, or no request.
+func Parse(data []byte) (File, error) {
 	seen := make(map[string]bool)
-	head = data
+	var exchanges []Exchange
+	head := data
 	name := ""
 	start, off := 0, 0
 	for line := range bytes.Lines(data) {
@@ -63,9 +95,9 @@ func parse(data []byte) (head []byte, exchanges []exchange, err error) {
 		}
 		switch {
 		case mark == "":
-			return nil, nil, errors.New("exchange with no name")
+			return File{}, errors.New("exchange with no name")
 		case seen[mark]:
-			return nil, nil, fmt.Errorf("two exchanges named %s", mark)
+			return File{}, fmt.Errorf("two exchanges named %s", mark)
 		}
 		seen[mark] = true
 		name, start, off = mark, next, next
@@ -74,39 +106,40 @@ func parse(data []byte) (head []byte, exchanges []exchange, err error) {
 		exchanges = append(exchanges, cut(name, data[start:]))
 	}
 	if len(exchanges) == 0 {
-		return nil, nil, errors.New("no exchange")
+		return File{}, errors.New("no exchange")
 	}
 	for _, s := range exchanges {
 		if len(bytes.TrimSpace(s.req)) == 0 {
-			return nil, nil, fmt.Errorf("exchange %s has no request", s.name)
+			return File{}, fmt.Errorf("exchange %s has no request", s.name)
 		}
 	}
-	return head, exchanges, nil
+	return File{Comment: head, Exchanges: exchanges}, nil
 }
 
-// cut returns the exchange that name and text hold, dividing text at the line
-// that begins the stored response. One that has never been sent has no such
-// line, and no response.
-func cut(name string, text []byte) exchange {
+// If text holds a line that begins a stored response, cut returns the
+// [Exchange] named name with the request before that line and the response
+// from it on. Otherwise, cut returns the Exchange with all of text as the
+// request and no response.
+func cut(name string, text []byte) Exchange {
 	off := 0
 	for line := range bytes.Lines(text) {
 		if isStatus(bytes.TrimRight(line, "\r\n")) {
-			return exchange{name, text[:off], text[off:]}
+			return Exchange{name, text[:off], text[off:]}
 		}
 		off += len(line)
 	}
-	return exchange{name: name, req: text}
+	return Exchange{name: name, req: text}
 }
 
-// markerName returns the name a marker line holds, and whether line is one.
-// The second cut is what keeps a line too short from being one: "-- --"
-// begins and ends with the same three bytes, and what the first cut leaves
-// has no room for the second.
+// If line begins with "-- ", ends with " --", and has room for a name between
+// them, markerName returns that name with surrounding spaces removed, and
+// true. Otherwise markerName returns "" and false.
 func markerName(line []byte) (string, bool) {
 	rest, ok := bytes.CutPrefix(line, marker)
 	if !ok {
 		return "", false
 	}
+	// "-- --" is too short to be one: the two cuts would overlap.
 	rest, ok = bytes.CutSuffix(rest, markerEnd)
 	if !ok {
 		return "", false
@@ -114,19 +147,19 @@ func markerName(line []byte) (string, bool) {
 	return string(bytes.TrimSpace(rest)), true
 }
 
-// markerLine returns the line that opens the exchange named name.
+// markerLine returns the line that opens the exchange named name, ending in \n.
 func markerLine(name string) string {
 	return string(marker) + name + string(markerEnd) + "\n"
 }
 
-// isStatus reports whether line begins a stored response, as
-// [http.Response.Write] writes one: HTTP/1.1 200 OK. The version is read
-// rather than assumed, a request over TLS having possibly negotiated HTTP/2.
+// isStatus reports whether line is a status line: HTTP/, a version of two
+// runs of digits separated by a dot, and a three-digit status code.
 func isStatus(line []byte) bool {
 	version, rest, ok := bytes.Cut(line, []byte(" "))
 	if !ok || !bytes.HasPrefix(version, []byte("HTTP/")) {
 		return false
 	}
+	// The version is read, not assumed: TLS may negotiate HTTP/2.
 	major, minor, ok := bytes.Cut(version[len("HTTP/"):], []byte("."))
 	if !ok || !digits(major) || !digits(minor) {
 		return false
@@ -148,31 +181,14 @@ func digits(b []byte) bool {
 	return true
 }
 
-// rewriteFile stores head and exchanges in path. Writing in place keeps the mode,
-// the owner, and any link or symbolic link to the file; mode applies only if
-// it has gone missing since it was read. A write that fails midway leaves the
-// file truncated, which is the price of not renaming a temporary over it: the
-// rename replaces the file, and with it everything the file system knew about
-// the one the user made.
-func rewriteFile(path string, mode os.FileMode, head []byte, exchanges []exchange) error {
-	var buf bytes.Buffer
-	endLine(&buf, head)
-	for _, s := range exchanges {
-		buf.WriteString(markerLine(s.name))
-		endLine(&buf, s.req)
-		endLine(&buf, s.resp)
-	}
-	return os.WriteFile(path, buf.Bytes(), mode)
-}
-
-// endLine writes b and ends the line it leaves open, if any. What follows is
-// a marker, and a marker is a line of its own.
+// If b is empty, endLine writes nothing.
+// Otherwise, endLine writes b, followed by a \n if b does not end in one.
 func endLine(buf *bytes.Buffer, b []byte) {
 	if len(b) == 0 {
 		return
 	}
 	buf.Write(b)
 	if b[len(b)-1] != '\n' {
-		buf.WriteByte('\n')
+		buf.WriteByte('\n') // a marker is a line of its own
 	}
 }

@@ -1,10 +1,13 @@
 # error b:
-# note what answered above the failure is stored, so the diff says how far the run got
+# note what answered above the failure is stored, so the diff says how far the
+# note run got. What did not answer is left as it was written, b's lower-case
+# note method and unspaced header among it: rr formats what it sends.
 -- stops at the first failure --
 GET {{url}}/ HTTP/1.1
 
 -- b --
-GET http://127.0.0.1:1/nope HTTP/1.1
+get http://127.0.0.1:1/nope HTTP/1.1
+content-type:application/json
 
 -- c --
 GET {{url}}/ HTTP/1.1
@@ -18,7 +21,8 @@ GET {{url}}/ HTTP/1.1
 
 	ok
 	-- b --
-	GET http://127.0.0.1:1/nope HTTP/1.1
+	get http://127.0.0.1:1/nope HTTP/1.1
+	content-type:application/json
 
 	-- c --
 	GET {{url}}/ HTTP/1.1

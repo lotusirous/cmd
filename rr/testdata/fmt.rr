@@ -40,3 +40,26 @@ host: h
 	GET https://example.com/ HTTP/1.1
 	Host: h
 
+# fmt
+# note a file is formatted whole: the comment above the first marker, every
+# note marker, and every exchange under them
+notes
+
+-- formats every exchange --
+get https://example.com/ HTTP/1.1
+x-k:1
+
+{"a":1}
+-- and the one after it --
+GET https://example.com/b HTTP/1.1
+
+	notes
+
+	-- formats every exchange --
+	GET https://example.com/ HTTP/1.1
+	x-k: 1
+
+	{"a":1}
+	-- and the one after it --
+	GET https://example.com/b HTTP/1.1
+

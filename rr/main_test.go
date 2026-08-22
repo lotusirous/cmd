@@ -77,13 +77,13 @@ func read(t *testing.T, srv *httptest.Server, path string) string {
 
 // parsed parses text the way rr does, so a test can look at one half of one
 // exchange without cutting the text itself.
-func parsed(t *testing.T, text string) []exchange {
+func parsed(t *testing.T, text string) []Exchange {
 	t.Helper()
-	_, exchanges, err := parse([]byte(text))
+	f, err := Parse([]byte(text))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return exchanges
+	return f.Exchanges
 }
 
 // stdoutFor returns what run should print for the exchanges in want, which is
@@ -99,9 +99,6 @@ func stdoutFor(t *testing.T, want string) string {
 	}
 	return b.String()
 }
-
-// Rr fmt writes the file in place, so the mode it was made with is the mode
-// it keeps. What it writes is testdata's to say.
 func TestFormatFileKeepsMode(t *testing.T) {
 	path := write(t, nil, "-- x --\nget https://example.com/ HTTP/1.1\n")
 	if err := os.Chmod(path, 0o640); err != nil {
@@ -116,22 +113,6 @@ func TestFormatFileKeepsMode(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o640 {
 		t.Errorf("mode = %v, want %v", got, os.FileMode(0o640))
-	}
-}
-
-// Formatting a formatted file changes nothing, so fmt in a loop is a fixed
-// point rather than a diff.
-func TestFormatFileIsIdempotent(t *testing.T) {
-	path := write(t, nil, "notes\n\n-- a --\nget https://example.com/ HTTP/1.1\nx-k:1\n\n{\"a\":1}\n-- b --\nGET https://example.com/b HTTP/1.1\n\n")
-	if err := formatFile(path); err != nil {
-		t.Fatal(err)
-	}
-	once := read(t, nil, path)
-	if err := formatFile(path); err != nil {
-		t.Fatal(err)
-	}
-	if twice := read(t, nil, path); twice != once {
-		t.Errorf("formatting twice differs:\n%s\nwant:\n%s", twice, once)
 	}
 }
 
@@ -158,17 +139,49 @@ func TestRunTwiceSendsSameBody(t *testing.T) {
 	}
 }
 
-// A body is sent without the newline that ends it, however many the file
-// has: httpfmt trims a body's trailing blank lines and rr strips the one
-// newline it leaves, so what goes on the wire ends where the text does.
+// The newline that ends the file's last line is the file's, not the body's,
+// and rr sends the body without it. What comes before it is the body as
+// written, blank lines and all: a run sends the file, and rr fmt is what
+// tidies one.
 func TestRunSendsBodyWithoutTrailingNewline(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"the newline that ends the file", "{\"a\":1}\n", `{"a":1}`},
+		{"a blank line the file holds", "{\"a\":1}\n\n\n", "{\"a\":1}\n\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seen := make(chan string, 1)
+			srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				seen <- string(b)
+			})
+
+			path := write(t, srv, "-- x --\nPOST "+urlMark+"/ HTTP/1.1\nHost: h\n\n"+tt.body)
+			if err := run(t.Context(), path, option{client: testClient(srv), out: io.Discard}); err != nil {
+				t.Fatal(err)
+			}
+			if got := <-seen; got != tt.want {
+				t.Fatalf("body sent = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// A file written with CRLF is a file like any other: parse reads one, and the
+// request in it is framed on the way to the wire the same as any other. A run
+// does not rewrite the file, so nothing else undoes the line ending first.
+func TestRunSendsBodyOfCRLFFile(t *testing.T) {
 	seen := make(chan string, 1)
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		seen <- string(b)
 	})
 
-	path := write(t, srv, "-- x --\nPOST "+urlMark+"/ HTTP/1.1\nHost: h\n\n{\"a\":1}\n\n\n")
+	path := write(t, srv, "-- x --\r\nPOST "+urlMark+"/ HTTP/1.1\r\nHost: h\r\n\r\n{\"a\":1}\r\n")
 	if err := run(t.Context(), path, option{client: testClient(srv), out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +417,7 @@ func TestStoredResponseIsWireFormat(t *testing.T) {
 }
 
 func TestPick(t *testing.T) {
-	exchanges := []exchange{{name: "repos/list"}, {name: "users/list"}, {name: "repos/create"}}
+	exchanges := []Exchange{{name: "repos/list"}, {name: "users/list"}, {name: "repos/create"}}
 	tests := []struct {
 		name string
 		re   string

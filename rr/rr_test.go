@@ -238,6 +238,17 @@ func (c *testCase) run(t *testing.T) {
 	if got := read(t, srv, path); got != c.want {
 		t.Errorf(c.where()+" file after %s:\n%s\n\nwant:\n%s", c.cmd, got, c.want)
 	}
+	// Formatting a formatted file changes nothing, so fmt in a loop is a fixed
+	// point rather than a diff. httpfmt asserts as much of a request, on every
+	// case it has; this is of the whole file, markers and all.
+	if c.cmd == "fmt" {
+		if err := formatFile(path); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(t, srv, path); got != c.want {
+			t.Errorf(c.where()+" formatting twice differs:\n%s\n\nwant:\n%s", got, c.want)
+		}
+	}
 	// What rr prints is what it stores. A case that fails part way stores
 	// what answered above it, which is not all the want holds, so the two are
 	// the same text only when the whole run went through.
@@ -322,13 +333,13 @@ type reply struct {
 // exchanges that hold them.
 func (c *testCase) replies(t *testing.T) []reply {
 	t.Helper()
-	_, exchanges, err := parse([]byte(c.want))
+	f, err := Parse([]byte(c.want))
 	if err != nil {
 		return nil // a case whose want is no file has no replies to give
 	}
 	var replies []reply
-	for _, i := range pick(exchanges, c.pattern(t, c.match)) {
-		ex := exchanges[i]
+	for _, i := range pick(f.Exchanges, c.pattern(t, c.match)) {
+		ex := f.Exchanges[i]
 		if len(ex.resp) == 0 {
 			continue
 		}
@@ -361,6 +372,51 @@ func (c *testCase) pattern(t *testing.T, s string) *regexp.Regexp {
 // exch is an exchange as a test writes one: parse's three fields, as the
 // text they are read from rather than the bytes they are kept in.
 type exch struct{ name, req, resp string }
+
+// text writes the comment, then each exchange under the marker that names
+// it, ending the last line of any part that left one open: what follows is a
+// marker, and a marker is a line of its own.
+func TestText(t *testing.T) {
+	f := File{
+		Comment: []byte("notes\n\n"),
+		Exchanges: []Exchange{
+			{
+				name: "a",
+				req:  []byte("GET https://x/ HTTP/1.1\n\n"),
+				resp: []byte("HTTP/1.1 200 OK\n\nhi\n"),
+			},
+			{name: "b", req: []byte("GET https://y/ HTTP/1.1")}, // no newline, no response
+		},
+	}
+	want := "notes\n\n" +
+		"-- a --\nGET https://x/ HTTP/1.1\n\nHTTP/1.1 200 OK\n\nhi\n" +
+		"-- b --\nGET https://y/ HTTP/1.1\n"
+	if got := string(text(&f)); got != want {
+		t.Errorf("text:\n%q\nwant:\n%q", got, want)
+	}
+	if got := string(text(&File{})); got != "" {
+		t.Errorf("text of nothing = %q, want it empty", got)
+	}
+}
+
+// Format puts the request half of every exchange in canonical form and leaves
+// the rest as it is. The File it is given comes back untouched: what rr fmt
+// writes is one thing, and what a run stores is the file's own text.
+func TestFormat(t *testing.T) {
+	f := File{
+		Comment: []byte("notes\n\n"),
+		Exchanges: []Exchange{
+			{name: "a", req: []byte("get https://x/ HTTP/1.1\nhost: h\n"), resp: []byte("HTTP/1.1 200 OK\n\nhi\n")},
+		},
+	}
+	want := "notes\n\n-- a --\nGET https://x/ HTTP/1.1\nHost: h\n\nHTTP/1.1 200 OK\n\nhi\n"
+	if got := string(Format(&f)); got != want {
+		t.Errorf("Format:\n%q\nwant:\n%q", got, want)
+	}
+	if want := "get https://x/ HTTP/1.1\nhost: h\n"; string(f.Exchanges[0].req) != want {
+		t.Errorf("Format rewrote the File it was given: req = %q, want %q", f.Exchanges[0].req, want)
+	}
+}
 
 func TestParse(t *testing.T) {
 	tests := []struct {
@@ -443,7 +499,7 @@ func TestParse(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			head, exchanges, err := parse([]byte(tt.in))
+			f, err := Parse([]byte(tt.in))
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want it to mention %q", err, tt.wantErr)
@@ -453,13 +509,13 @@ func TestParse(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(head) != tt.head {
-				t.Errorf("head = %q, want %q", head, tt.head)
+			if string(f.Comment) != tt.head {
+				t.Errorf("comment = %q, want %q", f.Comment, tt.head)
 			}
-			if len(exchanges) != len(tt.want) {
-				t.Fatalf("got %d exchanges, want %d", len(exchanges), len(tt.want))
+			if len(f.Exchanges) != len(tt.want) {
+				t.Fatalf("got %d exchanges, want %d", len(f.Exchanges), len(tt.want))
 			}
-			for i, s := range exchanges {
+			for i, s := range f.Exchanges {
 				w := tt.want[i]
 				if s.name != w.name || string(s.req) != w.req || string(s.resp) != w.resp {
 					t.Errorf("exchange %d = %q, %q, %q\nwant %q, %q, %q",
@@ -470,23 +526,15 @@ func TestParse(t *testing.T) {
 	}
 }
 
-// What parse reads, rewriteFile writes: a file rr has already written
-// comes back the same.
+// What parse reads, text writes: a file rr has already written comes back
+// the same.
 func TestParseRoundTrip(t *testing.T) {
 	want := "notes\n\n-- a --\nGET https://x/ HTTP/1.1\n\nHTTP/1.1 200 OK\n\nhi\n-- b --\nGET https://y/ HTTP/1.1\n\n"
-	path := write(t, nil, want)
-	data, mode, err := readFile(path)
+	f, err := Parse([]byte(want))
 	if err != nil {
 		t.Fatal(err)
 	}
-	head, exchanges, err := parse(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := rewriteFile(path, mode, head, exchanges); err != nil {
-		t.Fatal(err)
-	}
-	if got := read(t, nil, path); got != want {
+	if got := string(text(&f)); got != want {
 		t.Errorf("round trip:\n%q\nwant:\n%q", got, want)
 	}
 }

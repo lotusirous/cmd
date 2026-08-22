@@ -1,115 +1,72 @@
 RR(1)                                                                    RR(1)
 
 NAME
-     rr - send the HTTP requests stored in a file, store the responses in it
+     rr - keep HTTP requests and their responses in one plain text file
 
 SYNOPSIS
-     rr run [ -match regexp ] [ -omit regexp ] [ -timeout duration ] file
+     rr run [-match regexp] [-omit regexp] [-timeout duration] file
      rr fmt file
-     rr gen [ -match regexp ] [ -form form ] file
+     rr gen [-match regexp] [-form form] file
 
 DESCRIPTION
-     Rr sends the HTTP requests stored in a file and writes each response
-     back into the same file, under the request that made it.  The name is
-     those two halves: request and response.
+     Rr sends the HTTP requests stored in a plain text file and writes
+     each response back into the same file, under the request that made
+     it.  The name is those two halves: request and response.
 
-     The file is plain text and holds the protocol itself: each request as
-     it goes on the wire, each response as it came back.  Its layout is
-     txtar's, the archive format the Go tools keep their test cases in, and
-     so are its goals:
-
-          - be trivial enough to write and edit by hand.
-          - be HTTP and nothing else, but for the line that names an
-            exchange.
-          - diff nicely in git history and code reviews.
-
-     Non-goals include being a scripting language, asserting anything about
-     a response, carrying state from one exchange to the next, and storing
-     a body that is not text.
-
-     A file holds a collection of exchanges, each opened by a txtar marker
-     line naming it:
+     The file is text and nothing more: it holds the protocol itself, laid
+     out after txtar.  A marker line opens each exchange and names it:
 
           -- items/create --
 
-     Text above the first marker is a comment rr does not read.  A name is
-     the writer's own, and it is what -match selects on and what an error
-     quotes, so no two exchanges in a file may answer to one.  Rr sends
-     them in the order the file has them and stops at the first failure, an
-     exchange being free to rely on the one above it.
+     Text above the first marker is a comment rr does not read, and no two
+     exchanges may answer to one name.  Rr sends them in the order the file
+     has them and stops at the first failure.
 
-     A request is wire-format HTTP with an absolute request URI.
-     Everything after the blank line is the body; rr measures it, and
-     Content-Length need be neither written by hand nor kept up to date.
-     ${NAME} and $NAME are read from the environment when the request is
-     sent, in the body as well as the headers, and the file keeps the
+     An exchange is wire-format HTTP with an absolute request URI, followed
+     by the response last stored for it, which begins at the first line
+     that begins one: HTTP/, a version, and a status code.  Everything
+     after the blank line is the body; rr frames it, so Content-Length need
+     not be written by hand.  ${NAME} and $NAME are read from the
+     environment when the request is sent, and the file keeps the
      unexpanded text, so it is safe to commit.
 
-     A response begins at the first line that begins one: HTTP/, a version,
-     and a status code.  Everything above it is what you wrote, in the form
-     rr stores it.  It is stored as it came off the wire, and redirects are
-     not followed, so it is the answer to this request rather than the one
-     at the end of a chain.
+     rr run sends the requests and stores the responses as they came off
+     the wire, redirects not followed.  It rewrites the answer half and
+     nothing else.  A failed exchange is left as it was, and so is every
+     one below it, so the diff says how far the run got.
 
-     Rr run sends the requests and stores the responses, formatting each
-     request first, so a file written by hand ends up stored the way rr
-     would have written it.  A failed exchange is left as it was, and so is
-     every one below it; what answered above it is stored, so the diff says
-     how far the run got.  -match takes a regular expression and sends only
-     the exchanges whose name it matches, still in the order the file has
-     them.  It is unanchored, so write ^ to mean the beginning.  A pattern
-     that matches nothing is an error rather than a quiet success: a run
-     that did nothing and a run that changed nothing leave the same clean
-     diff.
+     rr fmt is the one command that rewrites a request, and it sends
+     nothing: a method and the standard header names are made canonical,
+     framing headers are dropped, and a body is indented when Content-Type
+     declares it JSON.  Formatting a formatted file changes nothing.
 
-     -omit takes a regular expression too, matched against the canonical
-     name of each header of the answer, and stores no header it matches.  A
-     Date that moves every run and a request id that is new every time say
-     little about an API and much about the clock, and a file is a better
-     diff without them: -omit '^(Date|X-Amz-|X-Request-Id$)' leaves the
-     file saying what changed.  It is unanchored as -match is, and it names
-     response headers and nothing else: the request is the writer's own
-     text and keeps every line of it, a Date written there being one rr
-     sends.  A pattern that matches no header is no error, unlike one that
-     matches no exchange, omitting nothing being an honest outcome.  And
-     Content-Length outlives any pattern, being rr's framing of the body it
-     stores rather than a header the server sent.
+     rr gen writes each request as a command for another program, on
+     standard output, and leaves the file alone.  It expands ${NAME}, so
+     what it writes is what rr run would send, values and all, and is not
+     itself safe to commit.
 
-     -timeout gives each exchange a deadline, written the way Go writes a
-     duration: 1s, 500ms, 2m30s.  It covers the whole of one exchange, from
-     the connection to the last byte of the body, and it is that exchange's
-     own rather than the run's.  Without it nothing gives up: a request
-     waits as long as the server takes to answer it, and ^C is how a run
-     that will not end is called off.
+OPTIONS
+     -match regexp
+            Send only the exchanges whose name regexp matches, in the
+            order the file has them.  The pattern is unanchored.
+            Matching no exchange is an error.
 
-     Rr fmt does that formatting on its own, over the whole file, and sends
-     nothing.  A known method is upper-cased, CRLF and folded lines are
-     undone, a header colon is followed by one space, the standard header
-     names are respelled and written ahead of the custom ones, whose casing
-     is their author's, and Content-Length and Transfer-Encoding are
-     dropped, rr framing the request.  Header lines that share a name keep
-     their order.  A body is indented only when Content-Type declares it
-     JSON: application/json, or a type ending in +json.  A body that merely
-     parses as JSON is left alone, nothing having said it was JSON, and so
-     is one that says it is JSON and does not parse.  Rr fmt formats every
-     request in the file, there being no -match, and touches nothing else:
-     the comment, the stored responses, and ${NAME} are left as they were.
-     Formatting a formatted file changes nothing.
+     -omit regexp
+            Store no response header whose canonical name regexp
+            matches: -omit '^(Date|X-Amz-)' keeps a moving date and a
+            fresh request id out of the diff.  The pattern is unanchored
+            and names response headers only.  Content-Length is always
+            kept, being rr's own framing.
 
-     Rr gen writes each request as a command for another program, on
-     standard output, and leaves the file alone.  The form is -form, and
-     curl is the default and so far the only one; a form rr does not know
-     is reported before the file is read.  -match narrows it as it does rr
-     run.  It formats and expands ${NAME} the way rr run does, so what it
-     writes is the request rr run would send, values and all, and is not
-     itself safe to commit.  The command says what the request says and no
-     more: no -s, no -i, no -L.  Header names come out canonical and
-     sorted, X-API-KEY as X-Api-Key, the header map having kept neither the
-     spelling nor the order the file had, and a header written with no
-     value takes the semicolon curl reads as send it empty.  The body goes
-     in --data-raw, which keeps the newlines an indented JSON body has, and
-     a body that is not text is read from standard input instead, the
-     command saying so rather than pretending it runs as it stands.
+     -timeout duration
+            Give each exchange a deadline, in Go's duration syntax: 1s,
+            500ms, 2m30s.  It covers one whole exchange, from the
+            connection to the last byte.  Without it a request waits
+            forever.
+
+     -form form
+            Write rr gen's commands in this form.  Curl is the default
+            and so far the only one.
 
 EXAMPLES
      Send the exchanges in a file, and read back what the file now holds:
@@ -235,7 +192,8 @@ BUGS
      A multipart body is sent as written, boundaries and all, but there is
      no helper to compose one, and no way to attach a file that is not
      text.  A body is sent without the newline that ends it, and there is
-     no way to send one that ends in a newline.
+     no way to send one that ends in a newline; a blank line the file holds
+     is part of the body, and rr fmt is what trims one.
 
      A body holding a line that would open an exchange, or one that begins
      like a response, is cut short there.  The format has no escape, that
