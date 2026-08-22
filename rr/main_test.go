@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -74,8 +75,33 @@ func read(t *testing.T, srv *httptest.Server, path string) string {
 	return canon(srv, string(data))
 }
 
+// sections parses text the way rr does, so a test can look at one half of one
+// exchange without cutting the text itself.
+func sections(t *testing.T, text string) []section {
+	t.Helper()
+	_, secs, err := splitFile([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return secs
+}
+
+// stdoutFor returns what run should print for the exchanges in want, which is
+// each response under the marker naming it.
+func stdoutFor(t *testing.T, want string) string {
+	t.Helper()
+	var b strings.Builder
+	for _, s := range sections(t, want) {
+		if len(s.resp) > 0 {
+			b.WriteString(marker(s.name))
+			b.Write(s.resp)
+		}
+	}
+	return b.String()
+}
+
 // TestRun checks the whole round trip: file in, file out. Each want is the
-// complete file rr should leave behind, and stdout must be its response half.
+// complete file rr should leave behind, and stdout must be its responses.
 func TestRun(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -93,21 +119,23 @@ func TestRun(t *testing.T) {
 				w.Header().Set("Content-Type", "text/plain")
 				io.WriteString(w, "hello")
 			},
-			file: `GET {{url}}/ HTTP/1.1
+			file: `-- x --
+GET {{url}}/ HTTP/1.1
 Host: example.com
 X-Test: yes
 
 `,
-			want: `GET {{url}}/ HTTP/1.1
+			want: `-- x --
+GET {{url}}/ HTTP/1.1
 Host: example.com
 X-Test: yes
 
-----
 HTTP/1.1 200 OK
 Content-Length: 5
 Content-Type: text/plain
 
-hello`,
+hello
+`,
 		},
 		{
 			name: "json body is indented",
@@ -115,16 +143,17 @@ hello`,
 				w.Header().Set("Content-Type", "application/json")
 				io.WriteString(w, `{"ok":true,"n":1}`)
 			},
-			file: `POST {{url}}/ HTTP/1.1
+			file: `-- x --
+POST {{url}}/ HTTP/1.1
 Host: example.com
 Content-Length: 4
 
 body`,
-			want: `POST {{url}}/ HTTP/1.1
+			want: `-- x --
+POST {{url}}/ HTTP/1.1
 Host: example.com
 
 body
-----
 HTTP/1.1 200 OK
 Content-Length: 26
 Content-Type: application/json
@@ -132,7 +161,8 @@ Content-Type: application/json
 {
   "ok": true,
   "n": 1
-}`,
+}
+`,
 		},
 		{
 			name: "an old response is replaced",
@@ -140,24 +170,26 @@ Content-Type: application/json
 				w.Header().Set("Content-Type", "text/plain")
 				io.WriteString(w, "v2")
 			},
-			file: `GET {{url}}/ HTTP/1.1
+			file: `-- x --
+GET {{url}}/ HTTP/1.1
 Host: example.com
 
-----
 HTTP/1.1 200 OK
 Content-Length: 2
 Content-Type: text/plain
 
-v1`,
-			want: `GET {{url}}/ HTTP/1.1
+v1
+`,
+			want: `-- x --
+GET {{url}}/ HTTP/1.1
 Host: example.com
 
-----
 HTTP/1.1 200 OK
 Content-Length: 2
 Content-Type: text/plain
 
-v2`,
+v2
+`,
 		},
 		{
 			// A chunked response has no length to preserve, so it is stored
@@ -169,85 +201,93 @@ v2`,
 				w.(http.Flusher).Flush()
 				io.WriteString(w, "ked")
 			},
-			file: `GET {{url}}/ HTTP/1.1
+			file: `-- x --
+GET {{url}}/ HTTP/1.1
 Host: example.com
 
 `,
-			want: `GET {{url}}/ HTTP/1.1
+			want: `-- x --
+GET {{url}}/ HTTP/1.1
 Host: example.com
 
-----
 HTTP/1.1 200 OK
 Content-Length: 7
 Content-Type: text/plain
 
-chunked`,
+chunked
+`,
 		},
 		{
-			// A hand-written file often stops after the last header. The
+			// A hand-written exchange often stops after the last header. The
 			// header block is unterminated, but unambiguous: rr completes it
 			// and stores the file in canonical form.
-			name: "a file that ends after the last header",
+			name: "an exchange that ends after the last header",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/plain")
 				io.WriteString(w, "hello")
 			},
-			file: `GET {{url}}/ HTTP/1.1
+			file: `-- x --
+GET {{url}}/ HTTP/1.1
 Host: example.com`,
-			want: `GET {{url}}/ HTTP/1.1
+			want: `-- x --
+GET {{url}}/ HTTP/1.1
 Host: example.com
 
-----
 HTTP/1.1 200 OK
 Content-Length: 5
 Content-Type: text/plain
 
-hello`,
+hello
+`,
 		},
 		{
 			// http.ReadRequest would drop this body for want of framing.
 			name:    "a body needs no Content-Length",
 			handler: echoBody,
-			file: `POST {{url}}/ HTTP/1.1
+			file: `-- x --
+POST {{url}}/ HTTP/1.1
 Host: example.com
 Content-Type: application/json
 
 {"a":1}`,
-			want: `POST {{url}}/ HTTP/1.1
+			want: `-- x --
+POST {{url}}/ HTTP/1.1
 Host: example.com
 Content-Type: application/json
 
 {
   "a": 1
 }
-----
 HTTP/1.1 200 OK
 Content-Length: 16
 Content-Type: text/plain
 
 got {
   "a": 1
-}`,
+}
+`,
 		},
 		{
 			// ... and would send only the first two bytes of it here.
 			name:    "a stale Content-Length is dropped",
 			handler: echoBody,
-			file: `POST {{url}}/ HTTP/1.1
+			file: `-- x --
+POST {{url}}/ HTTP/1.1
 Host: example.com
 Content-Length: 2
 
 {"a":1}`,
-			want: `POST {{url}}/ HTTP/1.1
+			want: `-- x --
+POST {{url}}/ HTTP/1.1
 Host: example.com
 
 {"a":1}
-----
 HTTP/1.1 200 OK
 Content-Length: 11
 Content-Type: text/plain
 
-got {"a":1}`,
+got {"a":1}
+`,
 		},
 		{
 			// The body parses as JSON, but text/plain says it is not one.
@@ -256,19 +296,21 @@ got {"a":1}`,
 				w.Header().Set("Content-Type", "text/plain")
 				io.WriteString(w, `{"a":1}`)
 			},
-			file: `GET {{url}}/ HTTP/1.1
+			file: `-- x --
+GET {{url}}/ HTTP/1.1
 Host: example.com
 
 `,
-			want: `GET {{url}}/ HTTP/1.1
+			want: `-- x --
+GET {{url}}/ HTTP/1.1
 Host: example.com
 
-----
 HTTP/1.1 200 OK
 Content-Length: 7
 Content-Type: text/plain
 
-{"a":1}`,
+{"a":1}
+`,
 		},
 		{
 			// An absolute request URI carries the host, so Host is optional.
@@ -277,17 +319,19 @@ Content-Type: text/plain
 				w.Header().Set("Content-Type", "text/plain")
 				io.WriteString(w, "hello")
 			},
-			file: `GET {{url}}/ HTTP/1.1
+			file: `-- x --
+GET {{url}}/ HTTP/1.1
 
 `,
-			want: `GET {{url}}/ HTTP/1.1
+			want: `-- x --
+GET {{url}}/ HTTP/1.1
 
-----
 HTTP/1.1 200 OK
 Content-Length: 5
 Content-Type: text/plain
 
-hello`,
+hello
+`,
 		},
 	}
 
@@ -297,18 +341,198 @@ hello`,
 			path := write(t, srv, tt.file)
 
 			var stdout bytes.Buffer
-			if err := run(t.Context(), path, testClient(srv), &stdout); err != nil {
+			if err := run(t.Context(), path, nil, testClient(srv), &stdout); err != nil {
 				t.Fatal(err)
 			}
 
 			if got := read(t, srv, path); got != tt.want {
 				t.Errorf("file after run:\n%s\n\nwant:\n%s", got, tt.want)
 			}
-			_, wantStdout, _ := strings.Cut(tt.want, delim+"\n")
-			if got := canon(srv, stdout.String()); got != wantStdout {
-				t.Errorf("stdout:\n%s\n\nwant:\n%s", got, wantStdout)
+			if got, want := canon(srv, stdout.String()), stdoutFor(t, tt.want); got != want {
+				t.Errorf("stdout:\n%s\n\nwant:\n%s", got, want)
 			}
 		})
+	}
+}
+
+// A file is a collection: rr sends every exchange in it, in the order the file
+// has them, and stores each answer under the request that made it.
+func TestRunSendsEveryExchange(t *testing.T) {
+	var order []string
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		order = append(order, r.URL.Path)
+		w.Header().Set("Content-Type", "text/plain")
+		io.WriteString(w, strings.TrimPrefix(r.URL.Path, "/"))
+	})
+
+	file := `-- one --
+GET {{url}}/a HTTP/1.1
+
+-- two --
+GET {{url}}/b HTTP/1.1
+
+`
+	want := `-- one --
+GET {{url}}/a HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 1
+Content-Type: text/plain
+
+a
+-- two --
+GET {{url}}/b HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 1
+Content-Type: text/plain
+
+b
+`
+	path := write(t, srv, file)
+	var stdout bytes.Buffer
+	if err := run(t.Context(), path, nil, testClient(srv), &stdout); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(order, []string{"/a", "/b"}) {
+		t.Errorf("sent %q, want the file's order [/a /b]", order)
+	}
+	if got := read(t, srv, path); got != want {
+		t.Errorf("file after run:\n%s\n\nwant:\n%s", got, want)
+	}
+	if got, w := canon(srv, stdout.String()), stdoutFor(t, want); got != w {
+		t.Errorf("stdout:\n%s\n\nwant:\n%s", got, w)
+	}
+}
+
+// -match names the exchanges to send. The rest are not sent and are stored
+// back exactly as the file had them, unformatted request and all.
+func TestRunMatch(t *testing.T) {
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		io.WriteString(w, "ok")
+	})
+
+	file := `-- repos/list --
+GET {{url}}/a HTTP/1.1
+
+-- users/list --
+get {{url}}/b HTTP/1.1
+
+`
+	want := `-- repos/list --
+GET {{url}}/a HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 2
+Content-Type: text/plain
+
+ok
+-- users/list --
+get {{url}}/b HTTP/1.1
+
+`
+	path := write(t, srv, file)
+	if err := run(t.Context(), path, regexp.MustCompile("^repos/"), testClient(srv), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, srv, path); got != want {
+		t.Errorf("file after run:\n%s\n\nwant:\n%s", got, want)
+	}
+}
+
+// A pattern that names nothing is an error: running nothing and running
+// everything unchanged leave the same clean git diff behind.
+func TestRunNoMatch(t *testing.T) {
+	file := "-- x --\nGET https://example.com/ HTTP/1.1\n\n"
+	path := write(t, nil, file)
+
+	err := run(t.Context(), path, regexp.MustCompile("nope"), http.DefaultClient, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "no exchange matches") {
+		t.Fatalf("err = %v, want no exchange matches", err)
+	}
+	if got := read(t, nil, path); got != file {
+		t.Errorf("file changed:\n%s\n\nwant:\n%s", got, file)
+	}
+}
+
+// Rr stops at the first failure, an exchange being free to rely on the one
+// above it. What answered before it is stored; the rest of the file is left
+// as it was, so the diff says how far the run got.
+func TestRunStopsAtFirstFailure(t *testing.T) {
+	var sent int
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		sent++
+		w.Header().Set("Content-Type", "text/plain")
+		io.WriteString(w, "ok")
+	})
+
+	file := `-- a --
+GET {{url}}/ HTTP/1.1
+
+-- b --
+GET http://127.0.0.1:1/nope HTTP/1.1
+
+-- c --
+GET {{url}}/ HTTP/1.1
+
+`
+	want := `-- a --
+GET {{url}}/ HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 2
+Content-Type: text/plain
+
+ok
+-- b --
+GET http://127.0.0.1:1/nope HTTP/1.1
+
+-- c --
+GET {{url}}/ HTTP/1.1
+
+`
+	path := write(t, srv, file)
+	err := run(t.Context(), path, nil, testClient(srv), io.Discard)
+
+	var perr *fs.PathError
+	if !errors.As(err, &perr) {
+		t.Fatalf("err = %v, want an *fs.PathError", err)
+	}
+	if perr.Path != path {
+		t.Errorf("err names %s, want %s", perr.Path, path)
+	}
+	if !strings.Contains(perr.Err.Error(), "b:") {
+		t.Errorf("err = %v, want it to name the exchange b", perr.Err)
+	}
+	if sent != 1 {
+		t.Errorf("the server saw %d requests, want 1", sent)
+	}
+	if got := read(t, srv, path); got != want {
+		t.Errorf("file after run:\n%s\n\nwant:\n%s", got, want)
+	}
+}
+
+// Text before the first marker is a comment: run does not read it, and it
+// survives every rewrite.
+func TestRunKeepsComment(t *testing.T) {
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		io.WriteString(w, "ok")
+	})
+
+	file := `what this file is for
+
+-- x --
+GET {{url}}/ HTTP/1.1
+
+`
+	path := write(t, srv, file)
+	if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, srv, path); !strings.HasPrefix(got, "what this file is for\n\n-- x --\n") {
+		t.Errorf("comment lost:\n%s", got)
 	}
 }
 
@@ -321,7 +545,8 @@ func TestRunErrors(t *testing.T) {
 	}{
 		{
 			name: "request URI is not absolute",
-			file: `GET /path HTTP/1.1
+			file: `-- x --
+GET /path HTTP/1.1
 Host: example.com
 
 `,
@@ -329,7 +554,8 @@ Host: example.com
 		},
 		{
 			name: "every unset variable is named",
-			file: `GET https://example.com/$ALSO HTTP/1.1
+			file: `-- x --
+GET https://example.com/$ALSO HTTP/1.1
 Host: example.com
 Authorization: Bearer ${MISSING}
 
@@ -338,21 +564,23 @@ Authorization: Bearer ${MISSING}
 		},
 		{
 			name: "the server cannot be reached",
-			file: `GET http://127.0.0.1:1/nope HTTP/1.1
+			file: `-- x --
+GET http://127.0.0.1:1/nope HTTP/1.1
 Host: 127.0.0.1:1
 
-----
 HTTP/1.1 500 Old
 Content-Length: 3
 
-old`,
+old
+`,
 			want: "127.0.0.1:1",
 		},
 		{
 			// RFC 9112, 3.2: a request with two Host lines is malformed, and
 			// http.ReadRequest refuses it rather than pick one.
 			name: "two Host headers",
-			file: `GET https://example.com/ HTTP/1.1
+			file: `-- x --
+GET https://example.com/ HTTP/1.1
 Host: one
 Host: two
 
@@ -362,7 +590,27 @@ Host: two
 		{
 			name: "an empty file",
 			file: "",
-			want: "empty",
+			want: "no exchange",
+		},
+		{
+			name: "a file with no marker",
+			file: "GET https://example.com/ HTTP/1.1\n\n",
+			want: "no exchange",
+		},
+		{
+			name: "two exchanges of one name",
+			file: "-- x --\nGET https://example.com/a HTTP/1.1\n\n-- x --\nGET https://example.com/b HTTP/1.1\n\n",
+			want: "two exchanges named x",
+		},
+		{
+			name: "an exchange with no name",
+			file: "--  --\nGET https://example.com/ HTTP/1.1\n\n",
+			want: "no name",
+		},
+		{
+			name: "an exchange that is all response",
+			file: "-- x --\nHTTP/1.1 200 OK\nContent-Length: 0\n\n",
+			want: "exchange x has no request",
 		},
 	}
 
@@ -370,7 +618,7 @@ Host: two
 		t.Run(tt.name, func(t *testing.T) {
 			path := write(t, nil, tt.file)
 
-			err := run(t.Context(), path, &http.Client{CheckRedirect: noRedirect}, io.Discard)
+			err := run(t.Context(), path, nil, &http.Client{CheckRedirect: noRedirect}, io.Discard)
 
 			// Every error is an *fs.PathError naming the file. Matching on
 			// the inner error also keeps the temporary path, which embeds
@@ -401,29 +649,31 @@ func echoBody(w http.ResponseWriter, r *http.Request) {
 }
 
 // Rr fmt formats the request half without sending anything: it takes no
-// client, and whatever follows ---- is left byte for byte.
+// client, and a stored response is left byte for byte.
 func TestFormatFile(t *testing.T) {
-	before := `get https://example.com/ HTTP/1.1
+	before := `-- x --
+get https://example.com/ HTTP/1.1
 content-type:application/json
 content-length: 2
 
 {"a":1}
-` + delim + `
 HTTP/1.1 200 OK
 Content-Length: 2
 
-hi`
-	after := `GET https://example.com/ HTTP/1.1
+hi
+`
+	after := `-- x --
+GET https://example.com/ HTTP/1.1
 Content-Type: application/json
 
 {
   "a": 1
 }
-` + delim + `
 HTTP/1.1 200 OK
 Content-Length: 2
 
-hi`
+hi
+`
 
 	path := write(t, nil, before)
 	if err := os.Chmod(path, 0o640); err != nil {
@@ -444,13 +694,42 @@ hi`
 	}
 }
 
-// A file with no response yet gains no ---- line.
-func TestFormatFileNoResponse(t *testing.T) {
-	path := write(t, nil, "get https://example.com/ HTTP/1.1\nhost: h")
+// A marker is written the one way it is written, a name being the same name
+// however it was spaced, and the comment above the first one is kept.
+func TestFormatFileMarkers(t *testing.T) {
+	path := write(t, nil, "notes\n\n--   a/b   --\nget https://example.com/ HTTP/1.1\n")
 	if err := formatFile(path); err != nil {
 		t.Fatal(err)
 	}
-	want := "GET https://example.com/ HTTP/1.1\nHost: h\n\n"
+	want := "notes\n\n-- a/b --\nGET https://example.com/ HTTP/1.1\n\n"
+	if got := read(t, nil, path); got != want {
+		t.Errorf("formatted:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// Formatting a formatted file changes nothing, so fmt in a loop is a fixed
+// point rather than a diff.
+func TestFormatFileIsIdempotent(t *testing.T) {
+	path := write(t, nil, "notes\n\n-- a --\nget https://example.com/ HTTP/1.1\nx-k:1\n\n{\"a\":1}\n-- b --\nGET https://example.com/b HTTP/1.1\n\n")
+	if err := formatFile(path); err != nil {
+		t.Fatal(err)
+	}
+	once := read(t, nil, path)
+	if err := formatFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if twice := read(t, nil, path); twice != once {
+		t.Errorf("formatting twice differs:\n%s\nwant:\n%s", twice, once)
+	}
+}
+
+// An exchange with no response yet gains no response.
+func TestFormatFileNoResponse(t *testing.T) {
+	path := write(t, nil, "-- x --\nget https://example.com/ HTTP/1.1\nhost: h")
+	if err := formatFile(path); err != nil {
+		t.Fatal(err)
+	}
+	want := "-- x --\nGET https://example.com/ HTTP/1.1\nHost: h\n\n"
 	if got := read(t, nil, path); got != want {
 		t.Errorf("formatted:\n%q\nwant:\n%q", got, want)
 	}
@@ -459,7 +738,8 @@ func TestFormatFileNoResponse(t *testing.T) {
 // Running a file formats it, and leaves the mode alone.
 func TestRunFormats(t *testing.T) {
 	srv := serve(t, echoBody)
-	before := `post {{url}}/ HTTP/1.1
+	before := `-- x --
+post {{url}}/ HTTP/1.1
 content-type:application/json
 content-length: 2
 X-EMPTY:	
@@ -478,12 +758,11 @@ X-EMPTY:
 	if err := os.Chmod(path, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(t.Context(), path, testClient(srv), io.Discard); err != nil {
+	if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 
-	req, _, _ := strings.Cut(read(t, srv, path), delim+"\n")
-	if req != after {
+	if req := string(sections(t, read(t, srv, path))[0].req); req != after {
 		t.Errorf("request half:\n%s\nwant:\n%s", req, after)
 	}
 	info, err := os.Stat(path)
@@ -505,9 +784,9 @@ func TestRunTwiceSendsSameBody(t *testing.T) {
 	})
 
 	// No trailing newline: rr adds one when it stores the file.
-	path := write(t, srv, "POST "+urlMark+"/ HTTP/1.1\nHost: h\n\n{\"a\":1}")
+	path := write(t, srv, "-- x --\nPOST "+urlMark+"/ HTTP/1.1\nHost: h\n\n{\"a\":1}")
 	for i := range 2 {
-		if err := run(t.Context(), path, testClient(srv), io.Discard); err != nil {
+		if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
 			t.Fatalf("run %d: %v", i+1, err)
 		}
 	}
@@ -518,13 +797,32 @@ func TestRunTwiceSendsSameBody(t *testing.T) {
 	}
 }
 
+// A body is sent without the newline that ends it, however many the file
+// has: httpfmt trims a body's trailing blank lines and rr strips the one
+// newline it leaves, so what goes on the wire ends where the text does.
+func TestRunSendsBodyWithoutTrailingNewline(t *testing.T) {
+	seen := make(chan string, 1)
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		seen <- string(b)
+	})
+
+	path := write(t, srv, "-- x --\nPOST "+urlMark+"/ HTTP/1.1\nHost: h\n\n{\"a\":1}\n\n\n")
+	if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := <-seen, `{"a":1}`; got != want {
+		t.Fatalf("body sent = %q, want %q", got, want)
+	}
+}
+
 // A file reached through a symbolic link is written through it: the link
 // survives, and its target holds the new contents.
 func TestFormatFileThroughSymlink(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target.rr")
 	link := filepath.Join(dir, "link.rr")
-	if err := os.WriteFile(target, []byte("get https://example.com/ HTTP/1.1\nhost: h"), 0o644); err != nil {
+	if err := os.WriteFile(target, []byte("-- x --\nget https://example.com/ HTTP/1.1\nhost: h"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, link); err != nil {
@@ -542,7 +840,7 @@ func TestFormatFileThroughSymlink(t *testing.T) {
 	if info.Mode()&os.ModeSymlink == 0 {
 		t.Error("the symlink was replaced by a regular file")
 	}
-	want := "GET https://example.com/ HTTP/1.1\nHost: h\n\n"
+	want := "-- x --\nGET https://example.com/ HTTP/1.1\nHost: h\n\n"
 	data, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatal(err)
@@ -554,7 +852,7 @@ func TestFormatFileThroughSymlink(t *testing.T) {
 
 // The request carries the context, so cancelling it - which is what ^C does,
 // through signal.NotifyContext - drops a request in flight rather than
-// waiting out the client timeout.
+// waiting out the client timeout. Nothing answered, so the file is untouched.
 func TestRunCancel(t *testing.T) {
 	started := make(chan struct{})
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
@@ -562,12 +860,12 @@ func TestRunCancel(t *testing.T) {
 		<-r.Context().Done() // answer nothing until the client gives up
 	})
 
-	file := "GET " + urlMark + "/ HTTP/1.1\nHost: h\n\n"
+	file := "-- x --\nGET " + urlMark + "/ HTTP/1.1\nHost: h\n\n"
 	path := write(t, srv, file)
 	ctx, cancel := context.WithCancel(t.Context())
 
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, path, testClient(srv), io.Discard) }()
+	go func() { done <- run(ctx, path, nil, testClient(srv), io.Discard) }()
 	<-started
 	cancel()
 
@@ -592,8 +890,8 @@ func TestRunSendsRepeatedFields(t *testing.T) {
 		got <- r.Header["X-Tag"]
 	})
 
-	path := write(t, srv, "GET "+urlMark+"/ HTTP/1.1\nHost: h\nX-Tag: 1\nX-Tag: 2\n\n")
-	if err := run(t.Context(), path, testClient(srv), io.Discard); err != nil {
+	path := write(t, srv, "-- x --\nGET "+urlMark+"/ HTTP/1.1\nHost: h\nX-Tag: 1\nX-Tag: 2\n\n")
+	if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if tags := <-got; !slices.Equal(tags, []string{"1", "2"}) {
@@ -603,7 +901,7 @@ func TestRunSendsRepeatedFields(t *testing.T) {
 
 func TestRunDirectory(t *testing.T) {
 	dir := t.TempDir()
-	err := run(t.Context(), dir, http.DefaultClient, io.Discard)
+	err := run(t.Context(), dir, nil, http.DefaultClient, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "is a directory") {
 		t.Fatalf("err = %v, want directory error", err)
 	}
@@ -621,19 +919,18 @@ func TestRunKeepsVariablesOnDisk(t *testing.T) {
 	})
 	t.Setenv("TOKEN", "secret")
 
-	file := `GET {{url}}/ HTTP/1.1
+	req := `GET {{url}}/ HTTP/1.1
 Host: example.com
 Authorization: Bearer ${TOKEN}
 
 `
-	path := write(t, srv, file)
-	if err := run(t.Context(), path, testClient(srv), io.Discard); err != nil {
+	path := write(t, srv, "-- x --\n"+req)
+	if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 
-	req, _, _ := strings.Cut(read(t, srv, path), delim+"\n")
-	if req != file {
-		t.Errorf("request half:\n%s\n\nwant:\n%s", req, file)
+	if got := string(sections(t, read(t, srv, path))[0].req); got != req {
+		t.Errorf("request half:\n%s\n\nwant:\n%s", got, req)
 	}
 }
 
@@ -642,11 +939,11 @@ func TestRunKeepsMode(t *testing.T) {
 		io.WriteString(w, "ok")
 	})
 
-	path := write(t, srv, "GET "+urlMark+"/ HTTP/1.1\nHost: example.com\n\n")
+	path := write(t, srv, "-- x --\nGET "+urlMark+"/ HTTP/1.1\nHost: example.com\n\n")
 	if err := os.Chmod(path, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(t.Context(), path, testClient(srv), io.Discard); err != nil {
+	if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
@@ -658,56 +955,263 @@ func TestRunKeepsMode(t *testing.T) {
 	}
 }
 
-// The files above are folded to LF for readability; the response half is
-// really stored in wire format, with CRLF.
+// The files above are folded to LF for readability; a response is really
+// stored in wire format, with CRLF.
 func TestStoredResponseIsWireFormat(t *testing.T) {
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "ok")
 	})
 
-	path := write(t, srv, "GET "+urlMark+"/ HTTP/1.1\nHost: example.com\n\n")
-	if err := run(t.Context(), path, testClient(srv), io.Discard); err != nil {
+	path := write(t, srv, "-- x --\nGET "+urlMark+"/ HTTP/1.1\nHost: example.com\n\n")
+	if err := run(t.Context(), path, nil, testClient(srv), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, resp, _ := strings.Cut(string(data), delim+"\n")
+	resp := string(sections(t, string(data))[0].resp)
 	if !strings.HasPrefix(resp, "HTTP/1.1 200 OK\r\n") {
 		t.Fatalf("response half is not CRLF:\n%q", resp)
 	}
 }
 
+// exch is an exchange as a test writes one: splitFile's three fields, as the
+// text they are read from rather than the bytes they are kept in.
+type exch struct{ name, req, resp string }
+
 func TestSplitFile(t *testing.T) {
 	tests := []struct {
-		name     string
-		in       string
-		wantReq  string
-		wantRest string
+		name    string
+		in      string
+		head    string
+		want    []exch
+		wantErr string
 	}{
-		{"empty", "", "", ""},
-		{"request only", "GET https://x/\n\n", "GET https://x/\n\n", ""},
-		{"with response", "GET https://x/\n\n" + delim + "\nHTTP/1.1 200\n\n", "GET https://x/\n\n", delim + "\nHTTP/1.1 200\n\n"},
-		{"cr delimiter", "GET https://x/\r\n" + delim + "\r\nHTTP/1.1 200\r\n", "GET https://x/\r\n", delim + "\r\nHTTP/1.1 200\r\n"},
-		{"delimiter first", delim + "\nHTTP/1.1 200\n", "", delim + "\nHTTP/1.1 200\n"},
-		{"delimiter unterminated", "GET https://x/\n" + delim, "GET https://x/\n", delim},
-		{"delimiter mid-line", "GET https://x/----\n", "GET https://x/----\n", ""},
+		{
+			name: "one exchange",
+			in:   "-- a --\nGET https://x/\n\n",
+			want: []exch{{"a", "GET https://x/\n\n", ""}},
+		},
+		{
+			name: "a comment above the first marker",
+			in:   "notes\n\n-- a --\nGET https://x/\n",
+			head: "notes\n\n",
+			want: []exch{{"a", "GET https://x/\n", ""}},
+		},
+		{
+			name: "a stored response",
+			in:   "-- a --\nGET https://x/\n\nHTTP/1.1 200 OK\n\nhi\n",
+			want: []exch{{"a", "GET https://x/\n\n", "HTTP/1.1 200 OK\n\nhi\n"}},
+		},
+		{
+			name: "two exchanges",
+			in:   "-- a --\nGET https://x/\n-- b --\nGET https://y/\n",
+			want: []exch{{"a", "GET https://x/\n", ""}, {"b", "GET https://y/\n", ""}},
+		},
+		{
+			name: "a CRLF file",
+			in:   "-- a --\r\nGET https://x/\r\n\r\nHTTP/1.1 200 OK\r\n",
+			want: []exch{{"a", "GET https://x/\r\n\r\n", "HTTP/1.1 200 OK\r\n"}},
+		},
+		{
+			// The old delimiter is four bytes, too short to be a marker, so
+			// it is a line of the request like any other.
+			name: "the old delimiter is text",
+			in:   "-- a --\nGET https://x/\n----\nHTTP/1.1 200 OK\n",
+			want: []exch{{"a", "GET https://x/\n----\n", "HTTP/1.1 200 OK\n"}},
+		},
+		{
+			name: "a marker mid-line is text",
+			in:   "-- a --\nGET https://x/-- b --\n",
+			want: []exch{{"a", "GET https://x/-- b --\n", ""}},
+		},
+		{
+			// The response is found at the version and the code, so a header
+			// merely naming HTTP does not begin one.
+			name: "a header that is not a status line",
+			in:   "-- a --\nGET https://x/\nX-Note: HTTP/1.1 is fine\n\n",
+			want: []exch{{"a", "GET https://x/\nX-Note: HTTP/1.1 is fine\n\n", ""}},
+		},
+		{
+			name: "a response over HTTP/2",
+			in:   "-- a --\nGET https://x/\n\nHTTP/2.0 204 No Content\n",
+			want: []exch{{"a", "GET https://x/\n\n", "HTTP/2.0 204 No Content\n"}},
+		},
+		{name: "empty", in: "", wantErr: "no exchange"},
+		{name: "no marker at all", in: "GET https://x/\n", wantErr: "no exchange"},
+		{name: "no name", in: "--  --\nGET https://x/\n", wantErr: "no name"},
+		{
+			name:    "two of one name",
+			in:      "-- a --\nGET https://x/\n-- a --\nGET https://y/\n",
+			wantErr: "two exchanges named a",
+		},
+		{
+			name:    "no request",
+			in:      "-- a --\nHTTP/1.1 200 OK\n",
+			wantErr: "exchange a has no request",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req, rest := splitFile([]byte(tt.in))
-			if string(req) != tt.wantReq || string(rest) != tt.wantRest {
-				t.Fatalf("req = %q, rest = %q\nwant %q, %q", req, rest, tt.wantReq, tt.wantRest)
+			head, secs, err := splitFile([]byte(tt.in))
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want it to mention %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(head) != tt.head {
+				t.Errorf("head = %q, want %q", head, tt.head)
+			}
+			if len(secs) != len(tt.want) {
+				t.Fatalf("got %d exchanges, want %d", len(secs), len(tt.want))
+			}
+			for i, s := range secs {
+				w := tt.want[i]
+				if s.name != w.name || string(s.req) != w.req || string(s.resp) != w.resp {
+					t.Errorf("exchange %d = %q, %q, %q\nwant %q, %q, %q",
+						i, s.name, s.req, s.resp, w.name, w.req, w.resp)
+				}
 			}
 		})
+	}
+}
+
+// What splitFile reads, rewriteFile writes: a file rr has already written
+// comes back the same.
+func TestSplitFileRoundTrip(t *testing.T) {
+	want := "notes\n\n-- a --\nGET https://x/ HTTP/1.1\n\nHTTP/1.1 200 OK\n\nhi\n-- b --\nGET https://y/ HTTP/1.1\n\n"
+	path := write(t, nil, want)
+	data, mode, err := readFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, secs, err := splitFile(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rewriteFile(path, mode, head, secs); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, nil, path); got != want {
+		t.Errorf("round trip:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestMarkerName(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"-- a --", "a", true},
+		{"-- github/repos/list --", "github/repos/list", true},
+		{"--   a   --", "a", true},
+		{"--  --", "", true}, // a marker, but one splitFile refuses
+		{"-- --", "", false}, // five bytes: no room for a name
+		{"----", "", false},
+		{"--------", "", false}, // a run of dashes holds no space to open one
+		{"-- a", "", false},
+		{"a --", "", false},
+		{" -- a --", "", false},
+		{"-- a -- ", "", false},
+		{"GET https://x/-- a --", "", false},
+		{"", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			name, ok := markerName([]byte(tt.in))
+			if name != tt.want || ok != tt.ok {
+				t.Fatalf("markerName(%q) = %q, %v, want %q, %v", tt.in, name, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestIsStatus(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"HTTP/1.1 200 OK", true},
+		{"HTTP/1.0 404 Not Found", true},
+		{"HTTP/2.0 204 No Content", true},
+		{"HTTP/1.1 200", true},
+		{"HTTP/1.1 20 OK", false},
+		{"HTTP/1.1 2000 OK", false},
+		{"HTTP/1.1 abc OK", false},
+		{"HTTP/x.y 200 OK", false},
+		{"HTTP/11 200 OK", false},
+		{"HTTP/1.1", false},
+		{"X-Note: HTTP/1.1 200 OK", false},
+		{" HTTP/1.1 200 OK", false},
+		{"GET https://x/ HTTP/1.1", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := isStatus([]byte(tt.in)); got != tt.want {
+				t.Fatalf("isStatus(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPick(t *testing.T) {
+	secs := []section{{name: "repos/list"}, {name: "users/list"}, {name: "repos/create"}}
+	tests := []struct {
+		name string
+		re   string
+		want []int
+	}{
+		{"no pattern takes every one", "", []int{0, 1, 2}},
+		{"anchored", "^repos/", []int{0, 2}},
+		{"unanchored", "list", []int{0, 1}},
+		{"nothing", "^nope", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var re *regexp.Regexp
+			if tt.re != "" {
+				re = regexp.MustCompile(tt.re)
+			}
+			if got := pick(secs, re); !slices.Equal(got, tt.want) {
+				t.Fatalf("pick(%q) = %v, want %v", tt.re, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPattern(t *testing.T) {
+	empty := ""
+	bad := "("
+	good := "^a"
+
+	if re, err := pattern(nil); re != nil || err != nil {
+		t.Errorf("pattern(nil) = %v, %v, want nil, nil", re, err)
+	}
+	if re, err := pattern(&empty); re != nil || err != nil {
+		t.Errorf("pattern(%q) = %v, %v, want nil, nil", empty, re, err)
+	}
+	if _, err := pattern(&bad); err == nil {
+		t.Errorf("pattern(%q) = nil error, want one", bad)
+	}
+	re, err := pattern(&good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !re.MatchString("ab") || re.MatchString("ba") {
+		t.Errorf("pattern(%q) does not match as written", good)
 	}
 }
 
 func TestExpandEnv(t *testing.T) {
 	t.Setenv("NAME", "value")
 	t.Setenv("DOLLAR", "a$NAME b${NAME}")
-
 	tests := []struct {
 		name    string
 		in      string
@@ -744,41 +1248,6 @@ func TestExpandEnv(t *testing.T) {
 	}
 }
 
-func TestSplitArgs(t *testing.T) {
-	tests := []struct {
-		name string
-		in   []string
-		cmd  string
-		form string
-		path string
-		ok   bool
-	}{
-		{"run", []string{"run", "f"}, "run", "curl", "f", true},
-		{"fmt", []string{"fmt", "f"}, "fmt", "curl", "f", true},
-		{"gen with no form", []string{"gen", "f"}, "gen", "curl", "f", true},
-		{"gen with a form", []string{"gen", "curl", "f"}, "gen", "curl", "f", true},
-		{
-			// Whether rr knows the form is gen's to say, so that it can
-			// name the one it was given.
-			"gen with a form rr does not know",
-			[]string{"gen", "httpie", "f"}, "gen", "httpie", "f", true,
-		},
-		{"a form where none is taken", []string{"run", "curl", "f"}, "", "", "", false},
-		{"no file", []string{"run"}, "", "", "", false},
-		{"nothing at all", nil, "", "", "", false},
-		{"one word too many", []string{"gen", "curl", "f", "g"}, "", "", "", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cmd, form, path, ok := splitArgs(tt.in)
-			if cmd != tt.cmd || form != tt.form || path != tt.path || ok != tt.ok {
-				t.Fatalf("splitArgs(%q) = %q, %q, %q, %v, want %q, %q, %q, %v",
-					tt.in, cmd, form, path, ok, tt.cmd, tt.form, tt.path, tt.ok)
-			}
-		})
-	}
-}
-
 func TestGen(t *testing.T) {
 	tests := []struct {
 		name string
@@ -787,15 +1256,16 @@ func TestGen(t *testing.T) {
 	}{
 		{
 			name: "a method and a URL alone",
-			file: "get https://example.com/items HTTP/1.1\n",
-			want: "curl -X GET https://example.com/items\n",
+			file: "-- items --\nget https://example.com/items HTTP/1.1\n",
+			want: "# items\ncurl -X GET https://example.com/items\n",
 		},
 		{
 			// Names come out canonical and sorted, since a header map keeps
 			// neither the spelling nor the order the file had, and the body
 			// comes out as httpfmt indented it.
 			name: "headers and a JSON body",
-			file: `post https://example.com/items HTTP/1.1
+			file: `-- items/create --
+post https://example.com/items HTTP/1.1
 content-type: application/json
 x-note: it's fine
 accept: a
@@ -804,7 +1274,8 @@ x-empty:
 
 {"name": "x"}
 `,
-			want: `curl -X POST https://example.com/items \
+			want: `# items/create
+curl -X POST https://example.com/items \
   -H 'Accept: a' \
   -H 'Accept: b' \
   -H 'Content-Type: application/json' \
@@ -817,14 +1288,22 @@ x-empty:
 		},
 		{
 			name: "a stored response is no part of the request",
-			file: `GET https://example.com/ HTTP/1.1
+			file: `-- x --
+GET https://example.com/ HTTP/1.1
 
-----
 HTTP/1.1 200 OK
 Content-Length: 2
 
-hi`,
-			want: "curl -X GET https://example.com/\n",
+hi
+`,
+			want: "# x\ncurl -X GET https://example.com/\n",
+		},
+		{
+			// One command an exchange, named above it: the comment survives a
+			// pipe to a shell and says which request it is.
+			name: "every exchange in the file",
+			file: "-- a --\nGET https://example.com/a HTTP/1.1\n-- b --\nGET https://example.com/b HTTP/1.1\n",
+			want: "# a\ncurl -X GET https://example.com/a\n\n# b\ncurl -X GET https://example.com/b\n",
 		},
 	}
 	for _, tt := range tests {
@@ -832,7 +1311,7 @@ hi`,
 			path := write(t, nil, tt.file)
 
 			var b bytes.Buffer
-			if err := gen(t.Context(), "curl", path, &b); err != nil {
+			if err := gen(t.Context(), "curl", path, nil, &b); err != nil {
 				t.Fatal(err)
 			}
 
@@ -846,22 +1325,51 @@ hi`,
 	}
 }
 
+func TestGenMatch(t *testing.T) {
+	file := "-- repos/list --\nGET https://example.com/a HTTP/1.1\n-- users/list --\nGET https://example.com/b HTTP/1.1\n"
+	path := write(t, nil, file)
+
+	var b bytes.Buffer
+	if err := gen(t.Context(), "curl", path, regexp.MustCompile("^users/"), &b); err != nil {
+		t.Fatal(err)
+	}
+	want := "# users/list\ncurl -X GET https://example.com/b\n"
+	if got := b.String(); got != want {
+		t.Fatalf("gen:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestGenNoMatch(t *testing.T) {
+	path := write(t, nil, "-- a --\nGET https://example.com/ HTTP/1.1\n")
+
+	var b bytes.Buffer
+	err := gen(t.Context(), "curl", path, regexp.MustCompile("nope"), &b)
+	if err == nil || !strings.Contains(err.Error(), "no exchange matches") {
+		t.Fatalf("err = %v, want no exchange matches", err)
+	}
+	if b.Len() != 0 {
+		t.Errorf("wrote %q, want nothing", b.String())
+	}
+}
+
 func TestGenExpands(t *testing.T) {
 	// The command carries the value and the file keeps the variable: what is
 	// written is what run would send, and the file stays safe to commit.
 	t.Setenv("TOKEN", "s3cret")
-	file := `GET https://example.com/ HTTP/1.1
+	file := `-- x --
+GET https://example.com/ HTTP/1.1
 Authorization: Bearer ${TOKEN}
 
 `
 	path := write(t, nil, file)
 
 	var b bytes.Buffer
-	if err := gen(t.Context(), "curl", path, &b); err != nil {
+	if err := gen(t.Context(), "curl", path, nil, &b); err != nil {
 		t.Fatal(err)
 	}
 
-	want := `curl -X GET https://example.com/ \
+	want := `# x
+curl -X GET https://example.com/ \
   -H 'Authorization: Bearer s3cret'
 `
 	if got := b.String(); got != want {
@@ -875,7 +1383,7 @@ Authorization: Bearer ${TOKEN}
 func TestGenUnknownFormComesFirst(t *testing.T) {
 	// The form is checked before the file is opened, so a typo is reported
 	// as itself rather than as trouble with a file that was never at fault.
-	err := gen(t.Context(), "httpie", filepath.Join(t.TempDir(), "nope.rr"), io.Discard)
+	err := gen(t.Context(), "httpie", filepath.Join(t.TempDir(), "nope.rr"), nil, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "unknown form: httpie") {
 		t.Fatalf("err = %v, want it to name the form", err)
 	}
@@ -894,20 +1402,27 @@ func TestGenErrors(t *testing.T) {
 		{
 			name: "a form rr does not know",
 			form: "httpie",
-			file: "GET https://example.com/ HTTP/1.1\n\n",
+			file: "-- x --\nGET https://example.com/ HTTP/1.1\n\n",
 			want: "unknown form: httpie",
 		},
 		{
 			name:    "every unset variable is named",
 			form:    "curl",
-			file:    "GET https://example.com/$ALSO HTTP/1.1\nAuthorization: Bearer ${MISSING}\n\n",
+			file:    "-- x --\nGET https://example.com/$ALSO HTTP/1.1\nAuthorization: Bearer ${MISSING}\n\n",
 			want:    "unset: ALSO, MISSING",
+			pathErr: true,
+		},
+		{
+			name:    "the exchange is named",
+			form:    "curl",
+			file:    "-- items/create --\nGET /path HTTP/1.1\nHost: example.com\n\n",
+			want:    "items/create: ",
 			pathErr: true,
 		},
 		{
 			name:    "request URI is not absolute",
 			form:    "curl",
-			file:    "GET /path HTTP/1.1\nHost: example.com\n\n",
+			file:    "-- x --\nGET /path HTTP/1.1\nHost: example.com\n\n",
 			want:    "absolute",
 			pathErr: true,
 		},
@@ -915,7 +1430,7 @@ func TestGenErrors(t *testing.T) {
 			name:    "an empty file",
 			form:    "curl",
 			file:    "",
-			want:    "empty",
+			want:    "no exchange",
 			pathErr: true,
 		},
 	}
@@ -924,7 +1439,7 @@ func TestGenErrors(t *testing.T) {
 			path := write(t, nil, tt.file)
 
 			var b bytes.Buffer
-			err := gen(t.Context(), tt.form, path, &b)
+			err := gen(t.Context(), tt.form, path, nil, &b)
 			if err == nil {
 				t.Fatalf("gen wrote %q, want an error", b.String())
 			}
