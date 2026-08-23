@@ -54,7 +54,7 @@ func TestRunStoresWhenReportFails(t *testing.T) {
 	})
 	path := write(t, srv, "-- x --\nGET "+urlMark+"/ HTTP/1.1\n\n")
 
-	_, err := runFile(t.Context(), brokenPipe{}, path, "", option{client: testClient(srv)})
+	err := run(t.Context(), brokenPipe{}, []string{path}, option{client: testClient(srv)})
 	if !errors.Is(err, errBrokenPipe) {
 		t.Fatalf("err = %v, want %v", err, errBrokenPipe)
 	}
@@ -76,7 +76,7 @@ func TestRunReportsWriteFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := runFile(t.Context(), io.Discard, path, "", option{client: testClient(srv)})
+	err := run(t.Context(), io.Discard, []string{path}, option{client: testClient(srv)})
 	if err == nil || !strings.Contains(err.Error(), "send") {
 		t.Fatalf("err = %v, want it to name the exchange that stopped the run", err)
 	}
@@ -95,7 +95,7 @@ func TestRunStopsOnTimeout(t *testing.T) {
 	client := testClient(srv)
 	client.Timeout = 50 * time.Millisecond
 
-	_, err := runFile(t.Context(), io.Discard, path, "", option{client: client})
+	err := run(t.Context(), io.Discard, []string{path}, option{client: client})
 	if err == nil || !strings.Contains(err.Error(), "x:") {
 		t.Fatalf("err = %v, want it to name the exchange x", err)
 	}
@@ -116,7 +116,7 @@ func TestRunStopsOnCancel(t *testing.T) {
 	file := "-- x --\nGET " + urlMark + "/ HTTP/1.1\n\n"
 	path := write(t, srv, file)
 
-	_, err := runFile(ctx, io.Discard, path, "", option{client: testClient(srv)})
+	err := run(ctx, io.Discard, []string{path}, option{client: testClient(srv)})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -194,7 +194,7 @@ func TestStoredResponseIsWireFormat(t *testing.T) {
 		io.WriteString(w, "ok")
 	})
 	path := write(t, srv, "-- x --\r\nGET "+urlMark+"/ HTTP/1.1\r\n\r\n")
-	if _, err := runFile(t.Context(), io.Discard, path, "", option{client: testClient(srv)}); err != nil {
+	if err := run(t.Context(), io.Discard, []string{path}, option{client: testClient(srv)}); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)

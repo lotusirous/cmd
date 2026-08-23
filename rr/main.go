@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"iter"
 	"log"
 	"mime"
 	"net/http"
@@ -173,6 +174,19 @@ func walk(dir string, add func(string)) (int, error) {
 	return n, nil
 }
 
+// parseFile reads and parses path, naming it in the error.
+func parseFile(path string) (File, fs.FileMode, error) {
+	data, mode, err := readFile(path)
+	if err != nil {
+		return File{}, 0, err
+	}
+	f, err := Parse(data)
+	if err != nil {
+		return File{}, 0, &fs.PathError{Op: "parse", Path: path, Err: err}
+	}
+	return f, mode, nil
+}
+
 // noRedirect keeps the client from following redirects, so the stored
 // response is the one the file's request produced.
 func noRedirect(*http.Request, []*http.Request) error {
@@ -188,13 +202,20 @@ type option struct {
 func run(ctx context.Context, w io.Writer, paths []string, opt option) error {
 	sent := 0
 	for _, path := range paths {
-		var head string
-		if len(paths) > 1 {
-			head = path + "\n"
-		}
-		n, err := runFile(ctx, w, path, head, opt)
-		if err != nil {
-			return err
+		n := 0
+		for resp, err := range runFile(ctx, path, opt) {
+			if err != nil {
+				return err
+			}
+			if n == 0 && len(paths) > 1 {
+				if _, err := io.WriteString(w, path+"\n"); err != nil {
+					return err
+				}
+			}
+			n++
+			if _, err := w.Write(resp); err != nil {
+				return err
+			}
 		}
 		sent += n
 	}
@@ -215,50 +236,47 @@ func noMatch(paths []string) error {
 	return err
 }
 
-// runFile sends the exchanges in path that opt.match names. It writes head
-// before the first line it writes, and nothing at all if it writes none.
-func runFile(ctx context.Context, w io.Writer, path, head string, opt option) (int, error) {
-	data, mode, err := readFile(path)
-	if err != nil {
-		return 0, err
-	}
-	f, err := Parse(data)
-	if err != nil {
-		return 0, &fs.PathError{Op: "parse", Path: path, Err: err}
-	}
-
-	sent := 0
-	for i, exchange := range f.Exchanges {
-		if !isMatch(exchange, opt.match) {
-			continue
+// runFile sends the exchanges in path that opt.match names and yields each
+// response as it stores it. The file is written back whether the range runs
+// out or the caller stops it, so what answered is stored either way.
+func runFile(ctx context.Context, path string, opt option) iter.Seq2[[]byte, error] {
+	return func(yield func([]byte, error) bool) {
+		f, mode, err := parseFile(path)
+		if err != nil {
+			yield(nil, err)
+			return
 		}
 
-		var resp []byte
-		if resp, err = send(ctx, exchange, path, opt); err != nil {
-			break
-		}
-		f.Exchanges[i].Response = resp // the range variable is a copy
+		sent, ok := 0, true
+		for i, exchange := range f.Exchanges {
+			if !isMatch(exchange, opt.match) {
+				continue
+			}
 
-		var buf bytes.Buffer
-		if sent == 0 {
-			buf.WriteString(head)
+			var resp []byte
+			if resp, err = send(ctx, exchange, path, opt); err != nil {
+				break
+			}
+			f.Exchanges[i].Response = resp
+			sent++
+
+			var buf bytes.Buffer
+			buf.WriteString(markerLine(exchange.Name))
+			endLine(&buf, resp)
+			if ok = yield(buf.Bytes(), nil); !ok {
+				break
+			}
 		}
-		sent++
-		buf.WriteString(markerLine(exchange.Name))
-		endLine(&buf, resp)
-		if _, err = w.Write(buf.Bytes()); err != nil {
-			break
+		if sent > 0 {
+			err = errors.Join(err, os.WriteFile(path, text(&f), mode))
+		}
+		if err != nil && ok {
+			yield(nil, err)
 		}
 	}
-	if sent == 0 {
-		return 0, err
-	}
-	return sent, errors.Join(err, os.WriteFile(path, text(&f), mode))
 }
 
-// send expands and sends ex's request as the file writes it, and returns the
-// response in wire format, less the headers opt.omit names.
-func send(ctx context.Context, ex Exchange, path string, opt option) ([]byte, error) {
+func newRequest(ctx context.Context, ex Exchange, path string) (*http.Request, error) {
 	expanded, err := expandEnv(ex.Request)
 	if err != nil {
 		return nil, fail("expand", path, ex.Name, err)
@@ -266,6 +284,14 @@ func send(ctx context.Context, ex Exchange, path string, opt option) ([]byte, er
 	req, err := parseRequest(ctx, expanded)
 	if err != nil {
 		return nil, fail("parse", path, ex.Name, err)
+	}
+	return req, nil
+}
+
+func send(ctx context.Context, ex Exchange, path string, opt option) ([]byte, error) {
+	req, err := newRequest(ctx, ex, path)
+	if err != nil {
+		return nil, err
 	}
 	answer, err := opt.client.Do(req)
 	if err != nil {
@@ -338,18 +364,26 @@ type genOption struct {
 func gen(ctx context.Context, w io.Writer, paths []string, opt genOption) error {
 	written := 0
 	for _, path := range paths {
-		var head string
-		if len(paths) > 1 {
-			head = "# " + path + "\n"
-			if written > 0 {
-				head = "\n" + head // a blank line between one file and the next
+		n := 0
+		for cmd, err := range genFile(ctx, path, opt) {
+			if err != nil {
+				return err
+			}
+			if written > 0 { // a blank line between one command and the next
+				if _, err := io.WriteString(w, "\n"); err != nil {
+					return err
+				}
+			}
+			if n == 0 && len(paths) > 1 {
+				if _, err := fmt.Fprintf(w, "# %s\n", path); err != nil {
+					return err
+				}
+			}
+			n, written = n+1, written+1
+			if _, err := w.Write(cmd); err != nil {
+				return err
 			}
 		}
-		n, err := genFile(ctx, w, path, head, opt)
-		if err != nil {
-			return err
-		}
-		written += n
 	}
 	if written == 0 {
 		return noMatch(paths)
@@ -357,55 +391,46 @@ func gen(ctx context.Context, w io.Writer, paths []string, opt genOption) error 
 	return nil
 }
 
-// genFile writes the requests in path in another form. It writes head before
-// the first request it writes, and nothing at all if it writes none.
-func genFile(ctx context.Context, w io.Writer, path, head string, opt genOption) (int, error) {
-	var write func(io.Writer, *http.Request) error
-	switch opt.form {
-	case "curl":
-		write = http2curl.Write
-	default:
-		return 0, fmt.Errorf("unknown form: %s", opt.form)
-	}
+// genFile writes the requests in path in another form, yielding each command
+// as one block.
+func genFile(ctx context.Context, path string, opt genOption) iter.Seq2[[]byte, error] {
+	return func(yield func([]byte, error) bool) {
+		var write func(io.Writer, *http.Request) error
+		switch opt.form {
+		case "curl":
+			write = http2curl.Write
+		default:
+			yield(nil, fmt.Errorf("unknown form: %s", opt.form))
+			return
+		}
 
-	data, _, err := readFile(path)
-	if err != nil {
-		return 0, err
-	}
-	f, err := Parse(data)
-	if err != nil {
-		return 0, &fs.PathError{Op: "parse", Path: path, Err: err}
-	}
+		f, _, err := parseFile(path)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
 
-	n := 0 // how many are written, which is not where they sit in the file
-	for _, ex := range f.Exchanges {
-		if !isMatch(ex, opt.match) {
-			continue
+		for _, ex := range f.Exchanges {
+			if !isMatch(ex, opt.match) {
+				continue
+			}
+			req, err := newRequest(ctx, ex, path)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+
+			var buf bytes.Buffer
+			fmt.Fprintf(&buf, "# %s\n", ex.Name)
+			if err := write(&buf, req); err != nil {
+				yield(nil, err)
+				return
+			}
+			if !yield(buf.Bytes(), nil) {
+				return
+			}
 		}
-		expanded, err := expandEnv(ex.Request)
-		if err != nil {
-			return n, fail("expand", path, ex.Name, err)
-		}
-		req, err := parseRequest(ctx, expanded)
-		if err != nil {
-			return n, fail("parse", path, ex.Name, err)
-		}
-		lead := "\n" // a blank line between one command and the next
-		if n == 0 {
-			lead = head
-		}
-		if _, err := io.WriteString(w, lead); err != nil {
-			return n, err
-		}
-		if _, err := fmt.Fprintf(w, "# %s\n", ex.Name); err != nil {
-			return n, err
-		}
-		if err := write(w, req); err != nil {
-			return n, err
-		}
-		n++
 	}
-	return n, nil
 }
 
 func isMatch(e Exchange, re *regexp.Regexp) bool {
