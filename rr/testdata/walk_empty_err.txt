@@ -1,0 +1,4 @@
+# walk
+# args empty
+# error walk {{root}}/empty: no .rr file
+>>> empty/

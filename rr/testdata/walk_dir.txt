@@ -1,0 +1,23 @@
+# walk
+# args .
+# note a directory whose name begins with a dot is stepped over
+>>> a.rr
+a.rr
+>>> b.txt
+b.txt
+>>> sub/c.rr
+sub/c.rr
+>>> sub/deep/d.rr
+sub/deep/d.rr
+>>> testdata/g.rr
+testdata/g.rr
+>>> .git/e.rr
+.git/e.rr
+>>> _u/f.rr
+_u/f.rr
+>>> stdout
+{{root}}/_u/f.rr
+{{root}}/a.rr
+{{root}}/sub/c.rr
+{{root}}/sub/deep/d.rr
+{{root}}/testdata/g.rr

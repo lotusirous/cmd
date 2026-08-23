@@ -1,0 +1,5 @@
+# run
+# error parse {{root}}/f.rr: no exchange
+>>> f.rr
+GET https://example.com/ HTTP/1.1
+

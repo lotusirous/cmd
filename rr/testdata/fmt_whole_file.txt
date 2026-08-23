@@ -1,0 +1,28 @@
+# fmt
+# note a name is the same name however the marker spaced it, and an exchange
+# note with no response yet gains none
+>>> f.rr
+notes
+
+--   spaced   --
+get https://example.com/ HTTP/1.1
+x-k:1
+
+{"a":1}
+-- and the one after it --
+GET https://example.com/b HTTP/1.1
+host: h
+>>> want f.rr
+notes
+
+-- spaced --
+GET https://example.com/ HTTP/1.1
+x-k: 1
+
+{"a":1}
+-- and the one after it --
+GET https://example.com/b HTTP/1.1
+Host: h
+
+>>> stdout
+{{root}}/f.rr

@@ -1,0 +1,7 @@
+# gen
+# error expand {{root}}/f.rr: names every unset variable: unset: ALSO, MISSING
+>>> f.rr
+-- names every unset variable --
+GET https://example.com/$ALSO HTTP/1.1
+Authorization: Bearer ${MISSING}
+

@@ -1,0 +1,11 @@
+# gen
+# env TOKEN=s3cret
+>>> f.rr
+-- expands variables on stdout --
+GET https://example.com/ HTTP/1.1
+Authorization: Bearer ${TOKEN}
+
+>>> stdout
+# expands variables on stdout
+curl -X GET https://example.com/ \
+  -H 'Authorization: Bearer s3cret'

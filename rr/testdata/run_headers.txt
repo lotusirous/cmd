@@ -1,0 +1,28 @@
+# run
+# expect X-Test: yes
+# note the Host line rides along, but an absolute request URI carries the
+# note authority, so it is the URI the request is sent to
+>>> f.rr
+-- sends the request headers --
+GET {{url}}/ HTTP/1.1
+Host: example.com
+X-Test: yes
+
+>>> want f.rr
+-- sends the request headers --
+GET {{url}}/ HTTP/1.1
+Host: example.com
+X-Test: yes
+
+HTTP/1.1 200 OK
+Content-Length: 5
+Content-Type: text/plain
+
+hello
+>>> stdout
+-- sends the request headers --
+HTTP/1.1 200 OK
+Content-Length: 5
+Content-Type: text/plain
+
+hello

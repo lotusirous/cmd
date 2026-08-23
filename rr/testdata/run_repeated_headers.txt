@@ -1,0 +1,21 @@
+# run
+# expect X-Tag: 1
+# expect X-Tag: 2
+# note RFC 9110, 5.3 gives meaning to the order of field lines sharing a name
+>>> f.rr
+-- sends repeated header fields --
+GET {{url}}/ HTTP/1.1
+X-Tag: 1
+X-Tag: 2
+
+>>> want f.rr
+-- sends repeated header fields --
+GET {{url}}/ HTTP/1.1
+X-Tag: 1
+X-Tag: 2
+
+HTTP/1.1 200 OK
+Content-Length: 2
+Content-Type: text/plain
+
+ok

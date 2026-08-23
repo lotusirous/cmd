@@ -1,0 +1,8 @@
+# run
+# error parse {{root}}/f.rr: refuses a relative request uri: request URI must be absolute
+# note a request URI carries the host, there being no other place to write one
+>>> f.rr
+-- refuses a relative request uri --
+GET /path HTTP/1.1
+Host: example.com
+

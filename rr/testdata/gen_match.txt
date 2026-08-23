@@ -1,0 +1,9 @@
+# gen -match ^the
+>>> f.rr
+-- writes only what it names --
+GET https://example.com/a HTTP/1.1
+-- the one it names --
+GET https://example.com/b HTTP/1.1
+>>> stdout
+# the one it names
+curl -X GET https://example.com/b

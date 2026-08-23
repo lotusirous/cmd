@@ -4,9 +4,9 @@ NAME
      rr - keep HTTP requests and their responses in one plain text file
 
 SYNOPSIS
-     rr run [-match regexp] [-omit regexp] [-timeout duration] file
-     rr fmt file
-     rr gen [-match regexp] [-form form] file
+     rr run [-match regexp] [-omit regexp] [-timeout duration] file ...
+     rr fmt [-l] file ...
+     rr gen [-match regexp] [-form form] file ...
 
 DESCRIPTION
      Rr sends the HTTP requests stored in a plain text file and writes
@@ -30,26 +30,43 @@ DESCRIPTION
      environment when the request is sent, and the file keeps the
      unexpanded text, so it is safe to commit.
 
+     A file operand is a file, or a directory standing for every .rr file
+     below it, at any depth.  A walk takes the .rr files and no others and
+     passes over directories whose names begin with a dot; a file named
+     twice is read once, and a directory holding none is an error.
+
      rr run sends the requests and stores the responses as they came off
      the wire, redirects not followed.  It rewrites the answer half and
      nothing else.  A failed exchange is left as it was, and so is every
-     one below it, so the diff says how far the run got.
+     one below it, so the diff says how far the run got.  Many files are
+     sent in the order the operands name them and a run stops at the first
+     failure there as well, a batch being as ordered as a file.
 
      rr fmt is the one command that rewrites a request, and it sends
      nothing: a method and the standard header names are made canonical,
      framing headers are dropped, and a body is indented when Content-Type
-     declares it JSON.  Formatting a formatted file changes nothing.
+     declares it JSON.  Formatting a formatted file changes nothing, and a
+     file is written only when formatting changed it, so one already in
+     canonical form keeps the modification time it had.  Rr fmt names the
+     files it changed.  A file that will not parse is reported and the rest
+     are formatted still.
 
      rr gen writes each request as a command for another program, on
      standard output, and leaves the file alone.  It expands ${NAME}, so
      what it writes is what rr run would send, values and all, and is not
      itself safe to commit.
 
+     Where more than one file is in play, each file's name is written above
+     its exchanges, as grep names a file only when it was given more than
+     one.  A file that -match names nothing in is passed over; naming
+     nothing at all is an error.
+
 OPTIONS
      -match regexp
             Send only the exchanges whose name regexp matches, in the
-            order the file has them.  The pattern is unanchored.
-            Matching no exchange is an error.
+            order the file has them.  The pattern is unanchored.  A file
+            it names nothing in is passed over; naming nothing in any of
+            them is an error.
 
      -omit regexp
             Store no response header whose canonical name regexp
@@ -63,6 +80,10 @@ OPTIONS
             500ms, 2m30s.  It covers one whole exchange, from the
             connection to the last byte.  Without it a request waits
             forever.
+
+     -l     Name the files rr fmt would change, and change none of them.
+            It says what is not formatted before anything is written, as
+            git diff --exit-code says it after.
 
      -form form
             Write rr gen's commands in this form.  Curl is the default
@@ -127,6 +148,7 @@ EXAMPLES
 
           {"name":"x"}
           $ rr fmt items.rr
+          items.rr
           $ cat items.rr
           -- items/create --
           POST https://api.example.com/items HTTP/1.1
@@ -151,13 +173,21 @@ EXAMPLES
             "name": "x"
           }'
 
+     Format a repository of them, and check one without writing to it:
+
+          $ rr fmt .
+          api/items.rr
+          $ rr fmt -l .
+          $ echo $?
+          0
+
      Run a directory of them and let git say what an API changed.  A
      request and its last answer being one text file is the point of the
      tool: the exchanges that have to run in order belong in one file, in
      that order; a directory of files is still a collection, the
      environment is the environment, and sharing is git push.
 
-          $ for f in api/*.rr; do rr run "$f" >/dev/null; done
+          $ rr run api/ >/dev/null
           $ git diff --exit-code api/
 
 SOURCE
@@ -176,11 +206,15 @@ DIAGNOSTICS
      was called wrongly, and 1 otherwise.  An error names the file and,
      where there is one, the exchange: parse for a file that is not one,
      match for a pattern that selects nothing, expand for a variable the
-     environment does not hold, send for a request that did not go, and
-     read for a response that did not arrive whole.  Every unset variable
-     in an exchange is named at once, rather than one to a run.  A pattern
-     that does not compile is reported under the flag that held it, before
-     the file is read.
+     environment does not hold, send for a request that did not go, walk
+     for a directory holding no .rr file, and read for a response that did
+     not arrive whole.  Every unset variable in an exchange is named at
+     once, rather than one to a run.  A pattern that does not compile is
+     reported under the flag that held it, before a file is read.
+
+     Rr fmt is the one command that carries on after a failure, formatting
+     having no order to it: a file that will not parse is reported and the
+     rest are formatted, the status saying how many were left.
 
 BUGS
      Rr has no cookie jar, no OAuth flow, and no assertions.  An exchange

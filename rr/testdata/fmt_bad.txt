@@ -1,0 +1,25 @@
+# fmt
+# error 1 of 3 files not formatted
+# note a walk of a tree is long, so a file that will not parse is said as it
+# note is met and the rest are formatted all the same
+>>> a.rr
+-- x --
+get https://example.com/ HTTP/1.1
+
+>>> bad.rr
+not an exchange
+>>> c.rr
+-- x --
+get https://example.com/ HTTP/1.1
+
+>>> want a.rr
+-- x --
+GET https://example.com/ HTTP/1.1
+
+>>> want c.rr
+-- x --
+GET https://example.com/ HTTP/1.1
+
+>>> stdout
+{{root}}/a.rr
+{{root}}/c.rr

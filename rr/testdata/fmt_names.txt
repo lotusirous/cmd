@@ -1,0 +1,16 @@
+# fmt
+# note the output is a list of what rr fmt did, not of what it read
+>>> a.rr
+-- x --
+get https://example.com/ HTTP/1.1
+
+>>> b.rr
+-- x --
+GET https://example.com/ HTTP/1.1
+
+>>> want a.rr
+-- x --
+GET https://example.com/ HTTP/1.1
+
+>>> stdout
+{{root}}/a.rr

@@ -1,0 +1,19 @@
+# fmt
+# note where the request ends is visible once the file is formatted: above the
+# note status line is made canonical, below it is left alone
+>>> f.rr
+-- a --
+get https://x/ HTTP/1.1
+accept:a
+
+HTTP/2.0 204 No Content
+x-left: as it is
+>>> want f.rr
+-- a --
+GET https://x/ HTTP/1.1
+Accept: a
+
+HTTP/2.0 204 No Content
+x-left: as it is
+>>> stdout
+{{root}}/f.rr

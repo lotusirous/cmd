@@ -1,0 +1,10 @@
+# walk
+# args .git
+# note a dot directory named outright is walked: only one met on the way down
+# note is stepped over
+>>> .git/e.rr
+.git/e.rr
+>>> a.rr
+a.rr
+>>> stdout
+{{root}}/.git/e.rr

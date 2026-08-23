@@ -1,0 +1,19 @@
+# run -omit ^(Date|X-Request-Id)$
+# reply Date: Mon, 01 Jan 2035 00:00:00 GMT
+>>> f.rr
+-- leaves the request --
+GET {{url}}/ HTTP/1.1
+Date: Mon, 01 Jan 2035 00:00:00 GMT
+X-Request-Id: 7
+
+>>> want f.rr
+-- leaves the request --
+GET {{url}}/ HTTP/1.1
+Date: Mon, 01 Jan 2035 00:00:00 GMT
+X-Request-Id: 7
+
+HTTP/1.1 200 OK
+Content-Length: 2
+Content-Type: text/plain
+
+ok

@@ -1,0 +1,9 @@
+# gen -form httpie
+# args nope.rr
+# error unknown form: httpie
+# note the form is read before the file is, so a form nobody has is not
+# note reported as a file nobody can read
+>>> f.rr
+-- x --
+GET https://example.com/ HTTP/1.1
+

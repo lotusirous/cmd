@@ -1,0 +1,12 @@
+# run -match zzz
+# error no exchange matches
+# note one file names itself, as every other error rr returns does; many files
+# note have no one name to give
+>>> a.rr
+-- a --
+GET {{url}}/ HTTP/1.1
+
+>>> b.rr
+-- b --
+GET {{url}}/ HTTP/1.1
+

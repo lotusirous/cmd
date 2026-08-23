@@ -1,0 +1,50 @@
+# run
+# echo
+# env NAME=value
+# env DOLLAR=a$NAME b${NAME}
+# note one pass only: what a value holds is not expanded again, and a dollar
+# note that opens no name is text
+>>> f.rr
+-- expands both forms, adjacent --
+POST {{url}}/ HTTP/1.1
+
+${NAME} $NAME $NAME${NAME}
+-- does not re-expand a value --
+POST {{url}}/ HTTP/1.1
+
+${DOLLAR}
+-- leaves dollars that are not names --
+POST {{url}}/ HTTP/1.1
+
+{"price":"$5"}
+$$ $ ${}
+>>> want f.rr
+-- expands both forms, adjacent --
+POST {{url}}/ HTTP/1.1
+
+${NAME} $NAME $NAME${NAME}
+HTTP/1.1 200 OK
+Content-Length: 22
+Content-Type: text/plain
+
+value value valuevalue
+-- does not re-expand a value --
+POST {{url}}/ HTTP/1.1
+
+${DOLLAR}
+HTTP/1.1 200 OK
+Content-Length: 15
+Content-Type: text/plain
+
+a$NAME b${NAME}
+-- leaves dollars that are not names --
+POST {{url}}/ HTTP/1.1
+
+{"price":"$5"}
+$$ $ ${}
+HTTP/1.1 200 OK
+Content-Length: 23
+Content-Type: text/plain
+
+{"price":"$5"}
+$$ $ ${}

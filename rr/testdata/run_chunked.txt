@@ -1,0 +1,16 @@
+# run
+# chunked
+# note a chunked answer has no length to keep
+>>> f.rr
+-- stores a chunked response plainly --
+GET {{url}}/ HTTP/1.1
+
+>>> want f.rr
+-- stores a chunked response plainly --
+GET {{url}}/ HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 7
+Content-Type: text/plain
+
+chunked

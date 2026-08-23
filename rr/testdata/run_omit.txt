@@ -1,0 +1,19 @@
+# run -omit ^(Date|X-Amz-)
+# reply Date: Mon, 01 Jan 2035 00:00:00 GMT
+# reply X-Amz-Request-Id: 7f3c
+# note a Date that moves every run and a request id that is new every time are
+# note what a file is a better diff without
+>>> f.rr
+-- drops the chatty headers --
+GET {{url}}/ HTTP/1.1
+
+>>> want f.rr
+-- drops the chatty headers --
+GET {{url}}/ HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 2
+Content-Type: text/plain
+X-Request-Id: abcd
+
+ok

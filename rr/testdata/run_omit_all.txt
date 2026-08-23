@@ -1,0 +1,18 @@
+# run -omit .*
+# reply Content-Type: application/json
+# note Content-Length is rr's own framing, so it outlives a pattern that
+# note matches every name
+>>> f.rr
+-- keeps the framing --
+GET {{url}}/ HTTP/1.1
+
+>>> want f.rr
+-- keeps the framing --
+GET {{url}}/ HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 13
+
+{
+  "id": 7
+}

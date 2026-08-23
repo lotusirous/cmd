@@ -1,0 +1,39 @@
+# run
+# note a file is a collection: every exchange is sent, in the order it has them
+>>> f.rr
+-- one --
+GET {{url}}/a HTTP/1.1
+
+-- two --
+GET {{url}}/b HTTP/1.1
+
+>>> want f.rr
+-- one --
+GET {{url}}/a HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 1
+Content-Type: text/plain
+
+a
+-- two --
+GET {{url}}/b HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 1
+Content-Type: text/plain
+
+b
+>>> stdout
+-- one --
+HTTP/1.1 200 OK
+Content-Length: 1
+Content-Type: text/plain
+
+a
+-- two --
+HTTP/1.1 200 OK
+Content-Length: 1
+Content-Type: text/plain
+
+b

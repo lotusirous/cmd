@@ -1,0 +1,19 @@
+# run
+# twice
+# echo
+# note the body is read from the file each time, not consumed by the first send
+>>> f.rr
+-- sends the same body twice --
+POST {{url}}/ HTTP/1.1
+
+{"a":1}
+>>> want f.rr
+-- sends the same body twice --
+POST {{url}}/ HTTP/1.1
+
+{"a":1}
+HTTP/1.1 200 OK
+Content-Length: 7
+Content-Type: text/plain
+
+{"a":1}

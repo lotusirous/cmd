@@ -1,0 +1,16 @@
+# run
+# note the block is ended on the way to the wire and not in the file, which run
+# note does not rewrite: rr fmt is what ends it there
+>>> f.rr
+-- sends an exchange that ends after the last header --
+GET {{url}}/ HTTP/1.1
+Host: example.com
+>>> want f.rr
+-- sends an exchange that ends after the last header --
+GET {{url}}/ HTTP/1.1
+Host: example.com
+HTTP/1.1 200 OK
+Content-Length: 5
+Content-Type: text/plain
+
+hello

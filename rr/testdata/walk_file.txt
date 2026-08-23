@@ -1,0 +1,10 @@
+# walk
+# args a.rr
+>>> a.rr
+a.rr
+>>> b.txt
+b.txt
+>>> sub/c.rr
+sub/c.rr
+>>> stdout
+{{root}}/a.rr

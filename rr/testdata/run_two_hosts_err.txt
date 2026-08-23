@@ -1,0 +1,10 @@
+# run
+# error too many Host headers
+# note RFC 9112, 3.2: a request with two Host lines is malformed, and
+# note http.ReadRequest refuses it rather than pick one
+>>> f.rr
+-- refuses two host headers --
+GET https://example.com/ HTTP/1.1
+Host: one
+Host: two
+

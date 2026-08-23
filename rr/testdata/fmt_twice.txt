@@ -1,0 +1,14 @@
+# fmt
+# twice
+# note formatting a formatted file changes nothing, so the second pass names
+# note no file at all
+>>> f.rr
+-- x --
+get https://example.com/ HTTP/1.1
+host: h
+>>> want f.rr
+-- x --
+GET https://example.com/ HTTP/1.1
+Host: h
+
+>>> stdout

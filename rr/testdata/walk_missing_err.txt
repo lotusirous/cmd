@@ -1,0 +1,5 @@
+# walk
+# args nowhere
+# error no such file
+>>> a.rr
+a.rr

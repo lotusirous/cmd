@@ -1,0 +1,31 @@
+# run
+# error send {{root}}/f.rr: b:
+# note what answered above the failure is stored, so the diff says how far the
+# note run got; what did not answer is left as it was written
+>>> f.rr
+-- stops at the first failure --
+GET {{url}}/ HTTP/1.1
+
+-- b --
+get http://127.0.0.1:1/nope HTTP/1.1
+content-type:application/json
+
+-- c --
+GET {{url}}/ HTTP/1.1
+
+>>> want f.rr
+-- stops at the first failure --
+GET {{url}}/ HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 2
+Content-Type: text/plain
+
+ok
+-- b --
+get http://127.0.0.1:1/nope HTTP/1.1
+content-type:application/json
+
+-- c --
+GET {{url}}/ HTTP/1.1
+

@@ -20,15 +20,20 @@ stores no body that is not text.
 
 Usage:
 
-	rr run [-match regexp] [-omit regexp] [-timeout duration] file
-	rr fmt file
-	rr gen [-match regexp] [-form form] file
+	rr run [-match regexp] [-omit regexp] [-timeout duration] file...
+	rr fmt [-l] file...
+	rr gen [-match regexp] [-form form] file...
 
 'rr run' sends the requests and stores the responses. 'rr fmt' formats
 the file, sends nothing, and leaves any stored response alone. 'rr
 gen' writes the requests in another form and sends nothing either.
 Curl is the form it writes when none is named, and so far the only
 one there is.
+
+A file operand is a file, or a directory standing for every .rr file
+below it, at any depth. A walk takes the .rr files and no others and
+passes over directories whose names begin with a dot; a file named
+twice is read once, and a directory holding none is an error.
 
 # The file
 
@@ -84,6 +89,13 @@ it. A run rewrites the response half and nothing else. The request
 goes as the file writes it, and rr fmt is what puts one in
 canonical form.
 
+Many files are sent in the order the operands name them, and a run
+stops at the first failure there as well, a batch being as ordered
+as a file. Each file's name is written above its exchanges when
+there is more than one, where a comment sits. A file that -match
+names nothing in is passed over; naming nothing anywhere is the
+error.
+
 Nothing gives up on its own. A request waits as long as the server
 takes to answer it, and ^C is how a run is called off. -timeout
 gives each exchange a deadline instead, written the way Go writes
@@ -124,6 +136,12 @@ formats every request in the file, there being no -match, and
 touches nothing else: the comment and the stored responses stay as
 they were.
 
+A file is written only when formatting changed it, so one already
+in canonical form keeps the modification time it had, and rr fmt
+names the files it changed. -l names them and changes none. A file
+that will not parse is reported and the rest are formatted still,
+rr exiting 1 saying how many it left.
+
 # Generating
 
 Rr gen writes each matching request as a command for another
@@ -133,6 +151,9 @@ command is written under the name of its exchange, as a comment,
 so a pipe to a shell says which request is which. The request is
 expanded first, so what gen writes is what run would send, values
 and all, and is not itself safe to commit.
+
+Each file's name is written above its commands when there is more
+than one, as run writes one, and is a shell comment too.
 
 The curl form says what the request says and no more: no -s, no
 -i, no -L. Header names come out canonical and sorted, X-API-KEY

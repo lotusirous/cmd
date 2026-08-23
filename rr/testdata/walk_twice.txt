@@ -1,0 +1,21 @@
+# walk
+# args a.rr .
+# note a file named twice is sent once
+>>> sub/deep/d.rr
+sub/deep/d.rr
+>>> testdata/g.rr
+testdata/g.rr
+>>> _u/f.rr
+_u/f.rr
+>>> a.rr
+a.rr
+>>> b.txt
+b.txt
+>>> sub/c.rr
+sub/c.rr
+>>> stdout
+{{root}}/a.rr
+{{root}}/_u/f.rr
+{{root}}/sub/c.rr
+{{root}}/sub/deep/d.rr
+{{root}}/testdata/g.rr

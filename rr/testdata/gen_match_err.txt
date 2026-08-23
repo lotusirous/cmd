@@ -1,0 +1,6 @@
+# gen -match nope
+# error match {{root}}/f.rr: no exchange matches
+>>> f.rr
+-- match names nothing --
+GET https://example.com/ HTTP/1.1
+

@@ -1,0 +1,9 @@
+# run
+# env NAME=value
+# error expand {{root}}/f.rr: partly unset: unset: GONE, ALSO
+# note every unset name is reported, not only the last one
+>>> f.rr
+-- partly unset --
+POST {{url}}/ HTTP/1.1
+
+${NAME} ${GONE} $ALSO

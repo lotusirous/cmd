@@ -1,0 +1,9 @@
+# walk
+# args b.txt
+# note the .rr suffix is how a walk chooses, not how rr reads
+>>> a.rr
+a.rr
+>>> b.txt
+b.txt
+>>> stdout
+{{root}}/b.txt

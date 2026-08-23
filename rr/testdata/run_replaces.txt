@@ -1,0 +1,19 @@
+# run
+>>> f.rr
+-- replaces an old response --
+GET {{url}}/ HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 2
+Content-Type: text/plain
+
+v1
+>>> want f.rr
+-- replaces an old response --
+GET {{url}}/ HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 2
+Content-Type: text/plain
+
+v2

@@ -1,0 +1,43 @@
+# run
+# note a file with nothing to report names itself not at all
+>>> a.rr
+-- a --
+GET {{url}}/ HTTP/1.1
+
+>>> b.rr
+-- b --
+GET {{url}}/ HTTP/1.1
+
+>>> want a.rr
+-- a --
+GET {{url}}/ HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 1
+Content-Type: text/plain
+
+a
+>>> want b.rr
+-- b --
+GET {{url}}/ HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 1
+Content-Type: text/plain
+
+b
+>>> stdout
+{{root}}/a.rr
+-- a --
+HTTP/1.1 200 OK
+Content-Length: 1
+Content-Type: text/plain
+
+a
+{{root}}/b.rr
+-- b --
+HTTP/1.1 200 OK
+Content-Length: 1
+Content-Type: text/plain
+
+b

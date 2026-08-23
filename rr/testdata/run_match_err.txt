@@ -1,0 +1,8 @@
+# run -match nope
+# error match {{root}}/f.rr: no exchange matches
+# note a run that did nothing and a run that changed nothing leave the same
+# note clean diff, and only the error tells them apart
+>>> f.rr
+-- names nothing --
+GET https://example.com/ HTTP/1.1
+

@@ -1,0 +1,7 @@
+# fmt -l
+>>> a.rr
+-- x --
+get https://example.com/ HTTP/1.1
+
+>>> stdout
+{{root}}/a.rr

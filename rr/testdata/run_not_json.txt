@@ -1,0 +1,15 @@
+# run
+# note the body parses as JSON, but text/plain says it is not one
+>>> f.rr
+-- indents only what says it is json --
+GET {{url}}/ HTTP/1.1
+
+>>> want f.rr
+-- indents only what says it is json --
+GET {{url}}/ HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 7
+Content-Type: text/plain
+
+{"a":1}

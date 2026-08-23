@@ -1,0 +1,19 @@
+# run
+# crlf
+# echo
+# note which line ending a file has is the file's business, not the wire's
+>>> f.rr
+-- reads a crlf file --
+POST {{url}}/ HTTP/1.1
+
+{"a":1}
+>>> want f.rr
+-- reads a crlf file --
+POST {{url}}/ HTTP/1.1
+
+{"a":1}
+HTTP/1.1 200 OK
+Content-Length: 7
+Content-Type: text/plain
+
+{"a":1}

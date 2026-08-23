@@ -1,0 +1,9 @@
+# fmt
+# mode 640
+>>> f.rr
+-- x --
+get https://example.com/ HTTP/1.1
+>>> want f.rr
+-- x --
+GET https://example.com/ HTTP/1.1
+

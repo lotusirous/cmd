@@ -1,0 +1,27 @@
+# run
+# echo
+# note the lower-case method, the unspaced header and the unindented body are
+# note the file's own text, and rr fmt is what makes them canonical
+>>> f.rr
+what this file is for
+
+-- sends the request as the file writes it --
+post {{url}}/ HTTP/1.1
+content-type:application/json
+content-length: 2
+
+{"a":1}
+>>> want f.rr
+what this file is for
+
+-- sends the request as the file writes it --
+post {{url}}/ HTTP/1.1
+content-type:application/json
+content-length: 2
+
+{"a":1}
+HTTP/1.1 200 OK
+Content-Length: 7
+Content-Type: text/plain
+
+{"a":1}

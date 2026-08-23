@@ -1,0 +1,11 @@
+# walk
+# args sub
+>>> a.rr
+a.rr
+>>> sub/c.rr
+sub/c.rr
+>>> sub/deep/d.rr
+sub/deep/d.rr
+>>> stdout
+{{root}}/sub/c.rr
+{{root}}/sub/deep/d.rr

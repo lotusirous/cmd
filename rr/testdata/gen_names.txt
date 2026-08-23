@@ -1,0 +1,19 @@
+# gen
+# note one command an exchange and one comment a file: the names survive a
+# note pipe to a shell
+>>> a.rr
+-- a --
+GET https://example.com/a HTTP/1.1
+
+>>> b.rr
+-- b --
+GET https://example.com/b HTTP/1.1
+
+>>> stdout
+# {{root}}/a.rr
+# a
+curl -X GET https://example.com/a
+
+# {{root}}/b.rr
+# b
+curl -X GET https://example.com/b

@@ -1,0 +1,19 @@
+# run
+# note the length is counted after the body is indented: what is stored is
+# note framed by rr, not by the wire
+>>> f.rr
+-- indents a json response --
+GET {{url}}/ HTTP/1.1
+
+>>> want f.rr
+-- indents a json response --
+GET {{url}}/ HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Length: 26
+Content-Type: application/json
+
+{
+  "ok": true,
+  "n": 1
+}
