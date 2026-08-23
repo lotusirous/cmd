@@ -23,3 +23,5 @@ GET https://example.com/ HTTP/1.1
 >>> stdout
 {{root}}/a.rr
 {{root}}/c.rr
+>>> stderr
+rr: parse {{root}}/bad.rr: no exchange

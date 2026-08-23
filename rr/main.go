@@ -103,7 +103,7 @@ func main() {
 			},
 		})
 	case "fmt":
-		err = format(os.Stdout, paths, *listOnly)
+		err = format(os.Stdout, log.Default(), paths, *listOnly)
 	case "gen":
 		err = gen(ctx, os.Stdout, paths, genOption{match: match, form: *genForm})
 	}
@@ -308,25 +308,14 @@ func fail(op, path, name string, err error) error {
 	return &fs.PathError{Op: op, Path: path, Err: fmt.Errorf("%s: %w", name, err)}
 }
 
-// format formats each of paths and writes to w the name of every file it changed.
-func format(w io.Writer, paths []string, reportOnly bool) error {
+// format names on w every file formatFiles changed, and on errlog every error.
+func format(w io.Writer, errlog *log.Logger, paths []string, reportOnly bool) error {
 	bad := 0
-	for _, path := range paths {
-		out, mode, err := formatFile(path)
+	for path, err := range formatFiles(paths, reportOnly) {
 		if err != nil {
-			log.Print(err) // said as it is met: a walk of a tree is long
+			errlog.Print(err)
 			bad++
 			continue
-		}
-		if out == nil {
-			continue
-		}
-		if !reportOnly {
-			if err := os.WriteFile(path, out, mode); err != nil {
-				log.Print(err)
-				bad++
-				continue
-			}
 		}
 		if _, err := fmt.Fprintln(w, path); err != nil {
 			return err
@@ -336,6 +325,25 @@ func format(w io.Writer, paths []string, reportOnly bool) error {
 		return fmt.Errorf("%d of %d files not formatted", bad, len(paths))
 	}
 	return nil
+}
+
+// formatFiles formats each of paths, yielding every file it changed and every
+// error it met. A bad file does not end the range.
+func formatFiles(paths []string, reportOnly bool) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		for _, path := range paths {
+			out, mode, err := formatFile(path)
+			if err == nil && out == nil {
+				continue // already in canonical form
+			}
+			if err == nil && !reportOnly {
+				err = os.WriteFile(path, out, mode)
+			}
+			if !yield(path, err) {
+				return
+			}
+		}
+	}
 }
 
 // formatFile returns the requests in path in canonical form.

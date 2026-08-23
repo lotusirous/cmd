@@ -9,6 +9,7 @@ package main
 //	>>> f.rr		a file the case plants, "dir/" for a directory
 //	>>> want f.rr		what f.rr holds once the command has run
 //	>>> stdout		what the command writes
+//	>>> stderr		what it could not do
 //
 // A file with no want must come out untouched: the same bytes and the same
 // modification time, so a command that rewrites what it need not is caught.
@@ -105,6 +106,7 @@ type testCase struct {
 	files  map[string]*string
 	wants  map[string]*string
 	stdout *string // nil if the case says nothing about it
+	stderr *string
 
 	root string
 	url  string // empty unless the command is run
@@ -139,11 +141,17 @@ func readCase(t *testing.T, file string) *testCase {
 
 // section returns where the text under a ">>> " line is kept.
 func section(c *testCase, name string) *string {
-	if name == "stdout" {
+	switch name {
+	case "stdout":
 		if c.stdout == nil {
 			c.stdout = new(string)
 		}
 		return c.stdout
+	case "stderr":
+		if c.stderr == nil {
+			c.stderr = new(string)
+		}
+		return c.stderr
 	}
 	m := c.files
 	if path, ok := strings.CutPrefix(name, "want "); ok {
@@ -203,9 +211,6 @@ func directive(t *testing.T, c *testCase, s string) {
 }
 
 func runCase(t *testing.T, c *testCase) {
-	log.SetOutput(io.Discard) // rr fmt logs what it could not format
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-
 	for _, e := range c.env {
 		name, value, _ := strings.Cut(e, "=")
 		t.Setenv(name, value)
@@ -217,11 +222,12 @@ func runCase(t *testing.T, c *testCase) {
 	}
 	plant(t, c)
 
-	var out bytes.Buffer
-	err := execCase(t, c, srv, &out)
+	var out, errout bytes.Buffer
+	err := execCase(t, c, srv, &out, &errout)
 	if err == nil && c.twice {
 		out.Reset() // what the second run says is what changed
-		err = execCase(t, c, srv, &out)
+		errout.Reset()
+		err = execCase(t, c, srv, &out, &errout)
 	}
 	switch {
 	case c.wantErr == "":
@@ -239,10 +245,15 @@ func runCase(t *testing.T, c *testCase) {
 			t.Errorf("stdout:\n%s\nwant:\n%s", got, *c.stdout)
 		}
 	}
+	if c.stderr != nil {
+		if got := canon(c, errout.String()); got != *c.stderr {
+			t.Errorf("stderr:\n%s\nwant:\n%s", got, *c.stderr)
+		}
+	}
 	checkFiles(t, c)
 }
 
-func execCase(t *testing.T, c *testCase, srv *httptest.Server, out *bytes.Buffer) error {
+func execCase(t *testing.T, c *testCase, srv *httptest.Server, out, errout *bytes.Buffer) error {
 	t.Helper()
 	switch c.cmd {
 	case "run":
@@ -252,7 +263,7 @@ func execCase(t *testing.T, c *testCase, srv *httptest.Server, out *bytes.Buffer
 			client: testClient(srv),
 		})
 	case "fmt":
-		return format(out, paths(c), c.list)
+		return format(out, log.New(errout, "rr: ", 0), paths(c), c.list)
 	case "gen":
 		return gen(t.Context(), out, paths(c), genOption{
 			form:  c.form,

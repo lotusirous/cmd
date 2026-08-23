@@ -135,8 +135,10 @@ func TestFormatThroughSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := format(io.Discard, []string{link}, false); err != nil {
-		t.Fatal(err)
+	for _, err := range formatFiles([]string{link}, false) {
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	info, err := os.Lstat(link)
 	if err != nil {
