@@ -58,6 +58,35 @@ func TestPaths(t *testing.T) {
 	}
 }
 
+func TestClip(t *testing.T) {
+	dir := t.TempDir()
+	got := filepath.Join(dir, "got")
+	script := "#!/bin/sh\ncat >" + got + "\n"
+	for _, name := range []string{"pbcopy", "wl-copy", "xclip"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+
+	want := "/a/b\n/c d"
+	if err := clip(want); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != want {
+		t.Fatalf("clipboard = %q, want %q", b, want)
+	}
+
+	t.Setenv("PATH", t.TempDir())
+	if err := clip(want); err == nil {
+		t.Fatal("clip with no clipboard command: err = nil")
+	}
+}
+
 func setup(t testing.TB, files, links map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()

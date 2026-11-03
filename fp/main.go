@@ -1,19 +1,39 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 )
 
+func usage() {
+	fmt.Fprintln(os.Stderr, "usage: fp [-c] [path ...]")
+	flag.PrintDefaults()
+	os.Exit(2)
+}
+
 func main() {
-	out, err := paths(os.Args[1:], "")
+	log.SetFlags(0)
+	log.SetPrefix("fp: ")
+	c := flag.Bool("c", false, "copy the paths to the clipboard as well")
+	flag.Usage = usage
+	flag.Parse()
+
+	out, err := paths(flag.Args(), "")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "fp: %v\n", err)
-		os.Exit(1)
+		log.Fatal(err)
 	}
-	for _, p := range out {
-		fmt.Println(p)
+	s := strings.Join(out, "\n")
+	fmt.Println(s)
+	if *c {
+		if err := clip(s); err != nil {
+			log.Fatal(err)
+		}
 	}
 }
 
@@ -56,4 +76,23 @@ func resolvePath(wd, arg string) (string, error) {
 		return "", fmt.Errorf("%q: %w", arg, err)
 	}
 	return resolved, nil
+}
+
+// clip puts s on the system clipboard.
+func clip(s string) error {
+	argv := []string{"xclip", "-selection", "clipboard"}
+	switch {
+	case runtime.GOOS == "darwin":
+		argv = []string{"pbcopy"}
+	case os.Getenv("WAYLAND_DISPLAY") != "":
+		argv = []string{"wl-copy"}
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdin = strings.NewReader(s)
+	// xclip and wl-copy fork; a pipe here would hang Run.
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("clipboard: %w", err)
+	}
+	return nil
 }
